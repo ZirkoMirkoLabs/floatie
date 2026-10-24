@@ -5,7 +5,8 @@ const invoke = (ch) => (...a) => ipcRenderer.invoke(ch, ...a);
 
 contextBridge.exposeInMainWorld('app', {
   load: () => ipcRenderer.sendSync('load'),
-  save: send('save'),
+  save: invoke('save'),
+  saveSync: (d) => ipcRenderer.sendSync('save-sync', d),
   hide: send('hide'),
   quit: send('quit'),
   update: send('update'),

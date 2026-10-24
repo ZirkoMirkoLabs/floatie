@@ -14,9 +14,10 @@ $exe = Join-Path $env:TEMP $asset.name
 Write-Host "Downloading Floatie $($rel.tag_name)..."
 Invoke-WebRequest $asset.browser_download_url -OutFile $exe -UseBasicParsing
 Write-Host 'Installing...'
-Start-Process $exe -ArgumentList '/S' -Wait
+$p = Start-Process $exe -ArgumentList '/S' -Wait -PassThru
 Remove-Item $exe -Force -ErrorAction SilentlyContinue
-
 $app = Join-Path $env:LOCALAPPDATA 'Programs\Floatie\Floatie.exe'
-if (Test-Path $app) { Start-Process $app }
+if ($p.ExitCode -ne 0 -or -not (Test-Path $app)) { throw "The installer didn't finish (exit code $($p.ExitCode)). Try again, or download it from https://github.com/$repo/releases/latest" }
+
+Start-Process $app
 Write-Host 'Floatie is installed. Find it in the Start Menu; press Ctrl+Alt+Space to show or hide it.'

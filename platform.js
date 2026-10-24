@@ -93,7 +93,7 @@ function isConcealed(clipboard) {
       const b = clipboard.readBuffer('CanIncludeInClipboardHistory');
       if (b && b.length >= 4 && b.readUInt32LE(0) === 0) return true;
     }
-  } catch {}
+  } catch { return true; }   // can't tell? then don't record it
   return false;
 }
 
@@ -122,10 +122,12 @@ function virtualizedBy(userData) {
 function relaunchOutsideContainer(appDir) {
   const exe = process.execPath.replace(/'/g, "''");
   const args = (app && app.isPackaged ? [] : [appDir]).concat('--escaped').map((a) => `"${a}"`).join(' ').replace(/'/g, "''");
-  const ps = `Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"${exe}" ${args}' } | Out-Null`;
+  // success means WMI reported ReturnValue 0 and a process id; anything else keeps this copy running
+  const ps = `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '"${exe}" ${args}' }; ` +
+    'if ($r.ReturnValue -eq 0 -and $r.ProcessId) { exit 0 } else { exit 1 }';
   // wait for it: if this process exited first, the helper could be torn down before the new copy starts
   const r = require('child_process').spawnSync('powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', Buffer.from(`${ps}; exit 0`, 'utf16le').toString('base64')],
+    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', Buffer.from(ps, 'utf16le').toString('base64')],
     { stdio: 'ignore', windowsHide: true, timeout: 20000 });
   return r.status === 0;
 }

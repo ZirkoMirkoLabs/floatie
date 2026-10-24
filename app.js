@@ -82,10 +82,20 @@ else if (first.fresh) {
     if (!r.value) return;
     clearInterval(retry);
     adopt(r.value);
-    rollover(); render(); applyTheme();
+    rollover(); render(); applyTheme(); restoreAlarms();
   }, 2000);
 }
-const save = () => { if (loaded) A.save(D); };
+// saves are acknowledged: a failed write keeps retrying with the latest state and shows a warning until it lands
+let saving = false, saveAgain = false, saveRetry = null;
+async function save() {
+  if (!loaded) return;
+  if (saving) { saveAgain = true; return; }
+  saving = true; clearTimeout(saveRetry);
+  const ok = await A.save(D).catch(() => false);
+  saving = false;
+  $('#saveWarn').classList.toggle('hidden', ok);
+  if (saveAgain) { saveAgain = false; save(); } else if (!ok) saveRetry = setTimeout(save, 3000);
+}
 
 let P = { glass: 'acrylic', autoCollapse: true, expandOn: 'hover', theme: 'system', fade: true, idleOpacity: 0.35 };   // window prefs live in the main process
 let sel = today(), lastToday = today(), tab = 'tasks', collapsed = false;
@@ -165,8 +175,15 @@ function parseInput(raw, base) {
   o.text = s.replace(/\s+/g, ' ').trim();
   if (rem) {
     const d = toDate(o.date); d.setHours(rem.h, rem.m, 0, 0);
-    if (+d < Date.now() && !o.dateSet && o.date === today()) { d.setDate(d.getDate() + 1); o.date = ymd(d); }
+    const again = new Date(+d + 3600e3);   // clocks going back: the second 1:30 can still be ahead when the first has passed
+    if (+d < Date.now() && +again > Date.now() && again.getHours() === rem.h && again.getMinutes() === rem.m) d.setTime(+again);
+    else if (+d < Date.now() && !o.dateSet && o.date === today()) { d.setDate(d.getDate() + 1); o.date = ymd(d); }
     o.remindAt = +d;
+  }
+  if (o.repeat === 'weekdays') {   // the first occurrence skips the weekend too
+    const was = o.date;
+    while ([0, 6].includes(toDate(o.date).getDay())) o.date = addDays(o.date, 1);
+    if (o.date !== was && o.remindAt) o.remindAt = withDate(o.remindAt, o.date);
   }
   return o;
 }
@@ -214,7 +231,7 @@ function render() {
   let h = '';
   if (sel === t && D.timers.length) {
     h += '<ul>' + D.timers.map((x) => `
-      <li class="row timer-row ${isRinging('timer', x.id) ? 'ringing' : ''}" data-kind="timer" data-id="${x.id}">
+      <li class="row timer-row ${isRinging('timer', x.id) ? 'ringing' : ''}" data-kind="timer" data-id="${esc(x.id)}">
         <span class="body"><span class="text">${I.clock}${esc(x.label)}</span></span>${pill(x.timer, 'timer:' + x.id)}
         <span class="tools"><button class="ico del" data-act="del" title="Remove">${I.x}</button></span>
       </li>`).join('') + '</ul>';
@@ -234,15 +251,16 @@ function render() {
   justDone = null;
   renderPeek();
   updateLive();
+  if (!ringing.length && $('#alarm').classList.contains('open')) showAlarm();   // e.g. after an undo: nothing left to ring, so close it
   const inp = $('[data-setcustom]'); if (inp) inp.focus();
 }
 
 function row(t) {
   const now = Date.now(), meta = [];
   if (t.remindAt && !t.done) meta.push(`<span class="${t.remindAt < now ? 'late' : ''}">${I.bell}${t.date === today() || t.remindAt < now ? '' : fmtDay(ymd(new Date(t.remindAt)), { weekday: 'short' }) + ' '}${fmtTime(t.remindAt)}</span>`);
-  if (t.repeat) meta.push(`<span>${I.repeat}${t.repeat}</span>`);
+  if (t.repeat) meta.push(`<span>${I.repeat}${esc(t.repeat)}</span>`);
   return `
-  <li class="row ${t.done ? 'done' : ''} ${t.star ? 'starred' : ''} ${justDone === t.id ? 'just-done' : ''} ${isRinging('any', t.id) ? 'ringing' : ''}" data-kind="task" data-id="${t.id}" ${t.done ? '' : 'draggable="true"'}>
+  <li class="row ${t.done ? 'done' : ''} ${t.star ? 'starred' : ''} ${justDone === t.id ? 'just-done' : ''} ${isRinging('any', t.id) ? 'ringing' : ''}" data-kind="task" data-id="${esc(t.id)}" ${t.done ? '' : 'draggable="true"'}>
     <button class="check" data-act="toggle" title="${t.done ? 'Mark not done' : 'Mark done'}">${I.check}</button>
     <span class="body"><span class="text" title="Double-click to rename · right-click for more">${esc(t.text)}</span>${meta.length ? `<span class="meta">${meta.join('')}</span>` : ''}</span>
     ${pill(t.timer, 'task:' + t.id)}
@@ -252,7 +270,7 @@ function row(t) {
       <button class="ico del" data-act="del" title="Delete">${I.x}</button>
     </span>
   </li>
-  ${openSetter === t.id ? `<li class="setter" data-id="${t.id}">${[5, 10, 15, 25, 45, 60].map((m) => `<button class="chip" data-set="${m}">${m < 60 ? m + 'm' : '1h'}</button>`).join('')}<input class="mini-input" data-setcustom placeholder="min" inputmode="numeric"></li>` : ''}`;
+  ${openSetter === t.id ? `<li class="setter" data-id="${esc(t.id)}">${[5, 10, 15, 25, 45, 60].map((m) => `<button class="chip" data-set="${m}">${m < 60 ? m + 'm' : '1h'}</button>`).join('')}<input class="mini-input" data-setcustom placeholder="min" inputmode="numeric"></li>` : ''}`;
 }
 
 // collapsed view: today's open tasks and running timers, nothing else
@@ -314,14 +332,25 @@ function chime() {
     o.connect(g).connect(actx.destination); o.start(s); o.stop(s + 0.75);
   });
 }
+// `alarm` on the item is saved, so an alarm that fired but wasn't answered comes back after a restart
 function ring(kind, item) {
   ringing.push({ kind, id: item.id });
+  item.alarm = kind;
   if (kind === 'remind') item.reminded = true; else { item.timer.end = null; item.timer.left = 0; }
   save();
-  A.alarm(kind === 'remind' ? 'Reminder' : "Time's up", kind === 'timer' ? item.label : item.text);
+  announce(kind, kind === 'timer' ? item.label : item.text);
+}
+function announce(kind, title) {
+  A.alarm(kind === 'remind' ? 'Reminder' : "Time's up", title);
   if (S.sound && !soundTimer) { chime(); soundTimer = setInterval(() => (Date.now() > soundStop ? stopSound() : chime()), 2400); }
   soundStop = Date.now() + 60000;
   closeSheets(); setTab('tasks'); showAlarm(); render();
+}
+function restoreAlarms() {
+  for (const x of D.timers) if (x.alarm && !isRinging('timer', x.id)) ringing.push({ kind: 'timer', id: x.id });
+  for (const x of D.tasks) if (x.alarm && !x.done && !isRinging(x.alarm, x.id)) ringing.push({ kind: x.alarm, id: x.id });
+  const r = ringing[0], it = r && find(r.kind === 'timer' ? 'timer' : 'task', r.id);
+  if (it) announce(r.kind, r.kind === 'timer' ? it.label : it.text);
 }
 function stopSound() { clearInterval(soundTimer); soundTimer = null; }
 function showAlarm() {
@@ -340,8 +369,10 @@ function resolveAlarm(action) {
   const r = ringing.shift(); if (!r) return;
   const it = find(r.kind === 'timer' ? 'timer' : 'task', r.id);
   if (it) {
+    if (!isRinging('any', r.id)) delete it.alarm;
     if (action === 'snooze') {
-      if (r.kind === 'remind') { it.remindAt = Date.now() + 5 * MIN; it.reminded = false; } else it.timer = newTimer(5 * MIN);
+      // a snooze moves this occurrence only; repeats keep the scheduled time (remindBase)
+      if (r.kind === 'remind') { it.remindBase ||= it.remindAt; it.remindAt = Date.now() + 5 * MIN; it.reminded = false; } else it.timer = newTimer(5 * MIN);
     } else if (r.kind === 'timer') D.timers = D.timers.filter((x) => x.id !== r.id);
     else {
       if (r.kind === 'task') it.timer = null;
@@ -363,7 +394,7 @@ function addTask(raw) {
   if (!o.text) return;
   D.tasks.push({
     id: uid(), text: o.text, date: o.date, done: false, star: o.star, repeat: o.repeat,
-    timer: o.ms ? newTimer(o.ms) : null, remindAt: o.remindAt, reminded: false, due: o.repeat ? o.date : null,
+    timer: o.ms ? newTimer(o.ms) : null, remindAt: o.remindAt, remindBase: o.remindAt, reminded: false, due: o.repeat ? o.date : null,
     order: o.star ? minOrder(o.date) - 1 : maxOrder(o.date) + 1, created: Date.now(),
   });
   log('add', o.text, o.date !== today() ? { to: o.date } : {});
@@ -373,19 +404,39 @@ function setDone(t, on) {
   t.done = on; t.doneAt = on ? Date.now() : null;
   if (on) {
     log('done', t.text);
-    t.timer = null; justDone = t.id;
+    t.timer = null; justDone = t.id; delete t.alarm;
     ringing = ringing.filter((r) => r.id !== t.id);
     if (t.repeat && !t.spawned) {
-      const date = nextRepeat(t.due || t.date, t.repeat), id = uid();
-      D.tasks.push({ ...t, id, date, due: date, done: false, doneAt: null, timer: null, spawned: null, reminded: false,
-        remindAt: t.remindAt ? withDate(t.remindAt, date) : null, order: maxOrder(date) + 1 });
-      t.spawned = id;
+      const date = nextRepeat(t.due || t.date, t.repeat), series = (t.series ||= t.id);
+      const same = D.tasks.find((x) => x.series === series && x.date === date && x.id !== t.id);   // never two of one occurrence
+      if (same) t.spawned = same.id;
+      else {
+        const id = uid(), base = t.remindBase || t.remindAt, at = base ? withDate(base, date) : null;
+        D.tasks.push({ ...t, id, date, due: date, done: false, doneAt: null, timer: null, spawned: null, reminded: false,
+          remindAt: at, remindBase: at, order: maxOrder(date) + 1 });
+        t.spawned = id;
+      }
     }
   } else if (t.spawned) {
+    // an unfinished next occurrence is withdrawn; a finished one stays linked so re-completing doesn't make another
     const child = find('task', t.spawned);
-    if (child && !child.done) D.tasks = D.tasks.filter((x) => x.id !== t.spawned);
-    t.spawned = null;
+    if (!child) t.spawned = null;
+    else if (!child.done) { D.tasks = D.tasks.filter((x) => x.id !== t.spawned); t.spawned = null; }
   }
+}
+// undo puts back everything completion changed: the timer, the alarm, the next occurrence it created or withdrew
+function toggleWithUndo(t) {
+  const before = structuredClone(t), had = new Set(D.tasks.map((x) => x.id));
+  const child = t.spawned && find('task', t.spawned), childBefore = child && structuredClone(child);
+  setDone(t, !t.done);
+  const added = D.tasks.filter((x) => !had.has(x.id)).map((x) => x.id);
+  pushUndo(() => {
+    D.tasks = D.tasks.filter((x) => !(added.includes(x.id) && !x.done));
+    const x = find('task', before.id);
+    if (x) { for (const k of Object.keys(x)) if (!(k in before)) delete x[k]; Object.assign(x, structuredClone(before)); }
+    if (childBefore && !find('task', childBefore.id)) D.tasks.push(childBefore);
+    if (before.alarm && !before.done && !isRinging(before.alarm, before.id)) { ringing.push({ kind: before.alarm, id: before.id }); showAlarm(); }
+  });
 }
 function removeTask(id) {
   const t = find('task', id);
@@ -396,9 +447,9 @@ function removeTask(id) {
   save(); render();
 }
 function moveTask(t, date) {
-  const prev = { date: t.date, order: t.order, remindAt: t.remindAt, reminded: t.reminded };
+  const prev = { date: t.date, order: t.order, remindAt: t.remindAt, remindBase: t.remindBase, reminded: t.reminded };
   pushUndo(() => { const x = find('task', t.id); if (x) Object.assign(x, prev); });
-  if (t.remindAt) { t.remindAt = withDate(t.remindAt, date); t.reminded = false; }
+  if (t.remindAt) { t.remindAt = t.remindBase = withDate(t.remindBase || t.remindAt, date); t.reminded = false; }
   t.date = date; t.order = maxOrder(date) + 1;
   log('move', t.text, { to: date });
   save(); render();
@@ -437,7 +488,7 @@ scroll.addEventListener('click', (e) => {
   const btn = e.target.closest('[data-act]'); if (!btn) return;
   const li = btn.closest('li.row'), kind = li.dataset.kind, id = li.dataset.id, it = find(kind, id);
   switch (btn.dataset.act) {
-    case 'toggle': setDone(it, !it.done); pushUndo(() => { const x = find('task', id); if (x) setDone(x, !x.done); }); break;
+    case 'toggle': toggleWithUndo(it); break;
     case 'star': it.star = !it.star; break;
     case 'timer': if (it.timer) it.timer = null; else openSetter = openSetter === id ? null : id; break;
     case 'del':
@@ -497,7 +548,23 @@ function closePops() {
   menu.classList.add('hidden'); ctx.classList.add('hidden');
   $$('.ctx').forEach((x) => x.classList.remove('ctx'));
 }
-function closeSheets() { $$('.sheet').forEach((s) => s.classList.add('hidden')); }
+// an open sheet owns focus: what's underneath can't be tabbed to or typed into, and focus returns there on close
+const underSheet = () => $$('.panel > header, .panel > .tabs, .panel > .view, #saveWarn');
+let sheetReturn = null;
+function openSheet(id) {
+  closePops();
+  if (!$('.sheet:not(.hidden)')) sheetReturn = document.activeElement;
+  $$('.sheet').forEach((s) => s.classList.toggle('hidden', s.id !== id));
+  underSheet().forEach((el) => (el.inert = true));
+  $(`#${id} [data-close]`).focus();
+}
+function closeSheets() {
+  const wasOpen = !!$('.sheet:not(.hidden)');
+  $$('.sheet').forEach((s) => s.classList.add('hidden'));
+  underSheet().forEach((el) => (el.inert = false));
+  if (wasOpen && sheetReturn && document.contains(sheetReturn)) sheetReturn.focus({ preventScroll: true });
+  sheetReturn = null;
+}
 function placePop(x, y) {
   ctx.classList.remove('hidden');
   const pr = $('.panel').getBoundingClientRect(), cr = ctx.getBoundingClientRect();
@@ -537,7 +604,7 @@ function taskMenu(t, x, y, li) {
     if (c === 'star') t.star = !t.star;
     else if (c === 'rename') return rename($(`li.row[data-id="${t.id}"]`));
     else if (c === 'timer') t.timer = newTimer(+b.dataset.m * MIN);
-    else if (c === 'unremind') { t.remindAt = null; t.reminded = false; }
+    else if (c === 'unremind') { t.remindAt = t.remindBase = null; t.reminded = false; }
     else if (c === 'repeat') { t.repeat = b.dataset.v || null; t.due = t.repeat ? t.date : null; }
     else if (c === 'move') return moveTask(t, b.dataset.d);
     else if (c === 'del') return removeTask(t.id);
@@ -547,7 +614,7 @@ function taskMenu(t, x, y, li) {
   if (time) time.onchange = () => {
     if (!time.value) return;
     const [h, m] = time.value.split(':').map(Number), d = toDate(t.date); d.setHours(h, m, 0, 0);
-    t.remindAt = +d; t.reminded = false; save(); render();
+    t.remindAt = t.remindBase = +d; t.reminded = false; save(); render();
   };
 }
 
@@ -559,18 +626,19 @@ const folderName = (id) => CL.folders.find((f) => f.id === id)?.name || 'Recent'
 function renderClips() {
   const recentN = CL.items.filter((i) => !i.folder).length;
   if (folder && !CL.folders.some((f) => f.id === folder)) folder = null;
+  const draft = $('#newFolder')?.value || '';   // a clip arriving mid-typing must not wipe the folder name
   $('#folders').innerHTML =
     `<button class="chip ${!folder ? 'on' : ''}" data-f="">Recent · ${recentN}</button>` +
     CL.folders.map((f) => `<button class="chip ${folder === f.id ? 'on' : ''}" data-f="${f.id}" title="Right-click to rename or delete">${esc(f.name)}</button>`).join('') +
     (addingFolder ? '<input id="newFolder" placeholder="Folder name">' : '<button class="chip" id="addFolder" title="New folder">+</button>');
-  const nf = $('#newFolder'); if (nf) nf.focus();
+  const nf = $('#newFolder'); if (nf) { nf.value = draft; nf.focus(); }
 
   const q = clipQuery.toLowerCase();
   const items = CL.items
     .filter((i) => (q ? i.type === 'text' && i.text.toLowerCase().includes(q) : (i.folder || null) === folder))
     .sort((a, b) => b.at - a.at);
   $('#clipList').innerHTML = items.length ? '<ul>' + items.map((i) => `
-    <li class="clip" data-id="${i.id}" title="Click to copy">
+    <li class="clip" data-id="${esc(i.id)}" title="Click to copy" tabindex="0" role="button" aria-label="Copy ${i.type === 'text' ? esc(short(i.text, 80)) : 'image'}">
       <div class="c">
         ${i.type === 'text' ? `<div class="preview">${esc(i.text.slice(0, 600))}</div>` : `<img src="${esc(i.thumbUrl)}" alt="">`}
         <div class="meta"><span>${ago(i.at)}</span><span>${i.type === 'text' ? `${i.text.length} chars` : `${i.w}×${i.h}`}</span>${q && i.folder ? `<span>${I.folder}${esc(folderName(i.folder))}</span>` : ''}</div>
@@ -627,6 +695,9 @@ $('#clipList').addEventListener('click', (e) => {
   li.classList.add('copied');
   setTimeout(() => li.classList.remove('copied'), 900);
 });
+$('#clipList').addEventListener('keydown', (e) => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.clip')) { e.preventDefault(); e.target.click(); }
+});
 $('#clipList').addEventListener('contextmenu', (e) => {
   const li = e.target.closest('.clip'); if (!li) return;
   e.preventDefault(); clipMoveMenu(li.dataset.id, e.clientX, e.clientY, li);
@@ -675,19 +746,19 @@ function renderHistory() {
     move: (e) => `Moved ${q(e.text)} <em>to ${relDay(e.to)}</em>`,
     clear: (e) => `Cleared ${e.tasks.length} done task${e.tasks.length > 1 ? 's' : ''}`,
     restore: (e) => `Restored ${q(e.text)}`,
-    import: () => 'Imported a backup',
+    import: (e) => `Imported a backup${e.tasks?.length ? ` <em>(restore brings back the ${e.tasks.length} it replaced)</em>` : ''}`,
   };
   let h = '', day = '';
   for (const e of D.log) {
     const d = ymd(new Date(e.at));
     if (d !== day) { day = d; h += `<div class="hday">${relDay(d)} · ${fmtDay(d, { month: 'short', day: 'numeric' })}</div>`; }
-    const canRestore = e.tasks && !e.restored;
+    const canRestore = e.tasks?.length && !e.restored;
     h += `<div class="hrow ${e.restored ? 'restored' : ''}"><span class="what">${(say[e.type] || (() => esc(e.text)))(e)}</span>
       ${canRestore ? `<button class="btn" data-restore="${e.id}">Restore</button>` : ''}<time>${fmtTime(e.at)}</time></div>`;
   }
   $('#historyList').innerHTML = h || '<div class="empty"><b>No history yet</b>Everything you add, finish, move or delete shows up here.</div>';
 }
-function openHistory() { closePops(); renderHistory(); $('#history').classList.remove('hidden'); }
+function openHistory() { renderHistory(); openSheet('history'); }
 $('#historyBtn').onclick = openHistory;
 $('#mHistory').onclick = openHistory;
 $('#historyList').addEventListener('click', (e) => {
@@ -703,7 +774,7 @@ $('#historyList').addEventListener('click', (e) => {
 // ---------- menu, sheets ----------
 $('#menuBtn').onclick = () => { const was = menu.classList.contains('hidden'); closePops(); if (was) menu.classList.remove('hidden'); };
 $$('[data-close]').forEach((b) => (b.onclick = closeSheets));
-$('#mHelp').onclick = () => { closePops(); $('#help').classList.remove('hidden'); };
+$('#mHelp').onclick = () => openSheet('help');
 $('#mSettings').onclick = () => openSettings();
 $('#mUpdate').onclick = $('#sUpdate').onclick = () => { save(); A.update(); };
 $('#mQuit').onclick = () => { save(); A.quit(); };
@@ -766,7 +837,16 @@ function paintPrefs() {
   $('#sIdle').value = Math.round(P.idleOpacity * 100);
   $('#sIdleVal').textContent = `${Math.round(P.idleOpacity * 100)}%`;
   $$('#sAccent button').forEach((b) => b.classList.toggle('on', b.dataset.v === S.accent));
+  ariaToggles();
   applyTheme();
+}
+// switches announce their name and state to screen readers
+function ariaToggles() {
+  $$('.toggle').forEach((b) => {
+    b.setAttribute('role', 'switch');
+    b.setAttribute('aria-checked', String(b.classList.contains('on')));
+    b.setAttribute('aria-label', b.closest('.set').firstElementChild.firstChild.textContent.trim());
+  });
 }
 async function openSettings() {
   closePops();
@@ -775,11 +855,11 @@ async function openSettings() {
   $('#sAuto').classList.toggle('on', st.auto);
   $('#ver').textContent = `Floatie ${st.version} · everything is stored on this PC, with a backup every day`;
   paintPrefs();
-  $('#settings').classList.remove('hidden');
+  openSheet('settings');
 }
 const setPref = async (k, v) => { P = await A.setPrefs({ [k]: v }); paintPrefs(); };
 const segClick = (id, fn) => ($(`#${id}`).onclick = (e) => { const b = e.target.closest('[data-v]'); if (b) fn(b.dataset.v); });
-$('#sAuto').onclick = async () => $('#sAuto').classList.toggle('on', await A.autostart(!$('#sAuto').classList.contains('on')));
+$('#sAuto').onclick = async () => { $('#sAuto').classList.toggle('on', await A.autostart(!$('#sAuto').classList.contains('on'))); ariaToggles(); };
 $('#sPin').onclick = async () => { pinned = await A.pin(!pinned); paintPrefs(); };
 $('#sCollapse').onclick = () => setPref('autoCollapse', !P.autoCollapse);
 $('#sFade').onclick = () => setPref('fade', !P.fade);
@@ -793,21 +873,42 @@ segClick('sTheme', (v) => setPref('theme', v));
 segClick('sAccent', (v) => { S.accent = v; save(); paintPrefs(); });
 $('#sOpen').onclick = () => A.openData();
 $('#sExport').onclick = () => A.exportData({ tasks: D.tasks, timers: D.timers, notes: D.notes, log: D.log, settings: D.settings });
+// Import is all or nothing: every record is checked first, and a file with any bad record changes nothing.
 const validTimer = (tm) => tm && typeof tm.total === 'number' && (typeof tm.end === 'number' || typeof tm.left === 'number');
+const ID = /^[\w-]{1,64}$/, DAY = /^\d{4}-\d\d-\d\d$/;
+const optNum = (v) => v == null || Number.isFinite(v);
+const validTask = (t) => t && typeof t === 'object' && typeof t.id === 'string' && ID.test(t.id) && typeof t.text === 'string' && t.text.trim()
+  && DAY.test(t.date) && [null, undefined, 'daily', 'weekdays', 'weekly'].includes(t.repeat) && (t.due == null || DAY.test(t.due))
+  && optNum(t.remindAt) && optNum(t.remindBase) && optNum(t.order) && (t.timer == null || validTimer(t.timer));
+function importProblems(d) {
+  if (!d || typeof d !== 'object' || !Array.isArray(d.tasks)) return ['no task list'];
+  const p = [];
+  d.tasks.forEach((t, i) => { if (!validTask(t)) p.push(`task ${i + 1}`); });
+  if (new Set(d.tasks.map((t) => t?.id)).size !== d.tasks.length) p.push('repeated task ids');
+  if (d.timers != null && !(Array.isArray(d.timers) && d.timers.every((x) => x && typeof x.id === 'string' && ID.test(x.id) && validTimer(x.timer)))) p.push('timers');
+  if (d.notes != null && typeof d.notes !== 'string') p.push('notes');
+  return p;
+}
+const importMsg = (m) => { $('#importMsg').textContent = m; $('#importMsg').classList.toggle('hidden', !m); };
 $('#sImport').onclick = async () => {
+  importMsg('');
   const d = await A.importData();
-  if (!d || !Array.isArray(d.tasks)) return;
-  // only take well-formed entries, so a bad file can't break the tick loop
-  const tasks = d.tasks
-    .filter((t) => t && typeof t.id === 'string' && typeof t.text === 'string' && /^\d{4}-\d\d-\d\d$/.test(t.date))
-    .map((t) => ({ ...t, order: +t.order || 0, timer: validTimer(t.timer) ? t.timer : null }));
-  const timers = (Array.isArray(d.timers) ? d.timers : []).filter((x) => x && typeof x.id === 'string' && validTimer(x.timer)).map((x) => ({ ...x, label: String(x.label || 'Timer') }));
-  const before = JSON.stringify({ tasks: D.tasks, timers: D.timers, notes: D.notes });
-  pushUndo(() => Object.assign(D, JSON.parse(before)));
-  D.tasks = tasks; D.timers = timers;
+  if (!d) return;
+  const bad = importProblems(d);
+  if (bad.length) return importMsg(`Not imported: this isn't a valid Floatie backup (${bad.slice(0, 3).join(', ')}${bad.length > 3 ? '…' : ''}). Nothing was changed.`);
+  const replaced = D.tasks;
+  D.tasks = d.tasks.map((t) => ({ ...t, text: t.text.trim(), order: +t.order || 0, repeat: t.repeat || null, timer: t.timer || null }));
+  D.timers = (d.timers || []).map((x) => ({ id: x.id, label: String(x.label || 'Timer').slice(0, 200), timer: x.timer }));
   if (typeof d.notes === 'string') D.notes = d.notes;
-  if (Array.isArray(d.log)) D.log = d.log.slice(0, 400);
-  log('import', '');
+  if (Array.isArray(d.log)) {   // history entries are only kept with fields we can show and restore safely
+    D.log = d.log.filter((e) => e && typeof e === 'object' && Number.isFinite(e.at) && typeof e.type === 'string').slice(0, 399).map((e) => ({
+      id: ID.test(e.id) ? e.id : uid(), at: e.at, type: e.type, text: String(e.text ?? ''),
+      ...(DAY.test(e.to) ? { to: e.to } : {}), ...(Array.isArray(e.tasks) && e.tasks.every(validTask) ? { tasks: e.tasks, restored: !!e.restored } : {}),
+    }));
+  }
+  // the tasks it replaced stay in History, restorable without touching anything added later; the old undo steps no longer apply
+  log('import', '', { tasks: replaced });
+  undo.length = 0;
   save(); render(); closeSheets();
 };
 
@@ -833,13 +934,13 @@ document.addEventListener('keydown', (e) => {
   if (e.key === '/') { e.preventDefault(); setTab('tasks'); input.focus(); }
   else if (k === 't') { sel = today(); render(); }
   else if (k === 'w') toggleWeek();
-  else if (e.key === '?') $('#help').classList.remove('hidden');
+  else if (e.key === '?') openSheet('help');
 });
 
 // a file or link dropped on the window must not replace the app
 document.addEventListener('dragover', (e) => { if (!dragId) e.preventDefault(); });
 document.addEventListener('drop', (e) => { if (!dragId) e.preventDefault(); });
-window.addEventListener('beforeunload', () => { clearTimeout(notesT); save(); });
+window.addEventListener('beforeunload', () => { clearTimeout(notesT); if (loaded) A.saveSync(D); });
 
 // ---------- boot ----------
 A.getState().then((st) => {
@@ -852,3 +953,4 @@ applyTheme();
 rollover();
 if (migrated) save();   // first run after the localStorage version: write the migrated tasks to disk
 render();
+if (loaded) restoreAlarms();

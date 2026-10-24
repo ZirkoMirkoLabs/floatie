@@ -1,11 +1,11 @@
 :root, [data-theme="dark"] {
-  --glass: rgba(20, 20, 24, .55); --sheet: rgba(24, 24, 28, .9); --pop: rgba(38, 38, 43, .96);
+  --glass: rgba(20, 20, 24, .55); --sheet: rgb(24, 24, 28); --pop: rgba(38, 38, 43, .96);
   --raise: rgba(255, 255, 255, .06); --raise2: rgba(255, 255, 255, .11); --line: rgba(255, 255, 255, .09);
   --text: #f1f1f3; --muted: rgba(235, 235, 245, .58); --faint: rgba(235, 235, 245, .3);
   --danger: #ff7a7a; --shadow: rgba(0, 0, 0, .4);
 }
 [data-theme="light"] {
-  --glass: rgba(250, 250, 252, .55); --sheet: rgba(250, 250, 252, .92); --pop: rgba(255, 255, 255, .97);
+  --glass: rgba(250, 250, 252, .55); --sheet: rgb(250, 250, 252); --pop: rgba(255, 255, 255, .97);
   --raise: rgba(0, 0, 0, .05); --raise2: rgba(0, 0, 0, .09); --line: rgba(0, 0, 0, .08);
   --text: #17171a; --muted: rgba(20, 20, 30, .58); --faint: rgba(20, 20, 30, .3);
   --danger: #d43c3c; --shadow: rgba(0, 0, 0, .14);
@@ -143,7 +143,8 @@ footer button { color: var(--muted); } footer button:hover { color: var(--text);
 .clip img { display: block; max-width: 100%; max-height: 90px; border-radius: 6px; border: 1px solid var(--line); }
 .clip .meta { margin-top: 3px; }
 .clip .tools { display: flex; opacity: 0; }
-.clip:hover .tools { opacity: 1; }
+.clip:hover .tools, .clip:focus-within .tools { opacity: 1; }
+.clip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .clip .tools .ico { width: 22px; height: 22px; }
 .clip.copied::after { content: "Copied"; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: var(--accent); color: var(--on-accent);
                       font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; }
@@ -153,7 +154,7 @@ footer button { color: var(--muted); } footer button:hover { color: var(--text);
 #notes::placeholder { color: var(--muted); }
 
 /* ---------- popovers ---------- */
-.pop { position: absolute; background: var(--pop); backdrop-filter: blur(20px); border: 1px solid var(--line); border-radius: 9px; padding: 4px; min-width: 170px;
+.pop { max-height: calc(100vh - 12px); overflow-y: auto; position: absolute; background: var(--pop); backdrop-filter: blur(20px); border: 1px solid var(--line); border-radius: 9px; padding: 4px; min-width: 170px;
        z-index: 20; box-shadow: 0 10px 28px var(--shadow); }
 .pop > button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 6px 10px; border-radius: 6px; white-space: nowrap; }
 .pop > button:hover { background: var(--raise2); }
@@ -210,3 +211,7 @@ input[type="range"] { width: 110px; accent-color: var(--accent); }
 .card .more { margin-top: 8px; font-size: 11px; color: var(--muted); }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* save problems and import results */
+.save-warn { margin: 0 12px 8px; padding: 6px 10px; border-radius: 8px; font-size: 12px; background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.import-msg { font-size: 12px; color: var(--danger); padding-top: 10px; }

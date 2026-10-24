@@ -29,11 +29,22 @@ const persistDir = fresh();
 ok.push(launch('seed', persistDir));
 spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 4500)']);   // app stays closed while the seeded reminder comes due
 ok.push(launch('verify', persistDir));
+ok.push(launch('again', persistDir));   // the alarm that rang in `verify` was never answered: it must come back
 
-// data file locked at startup (as antivirus can do at login): the app must wait, not start blank or overwrite it
+// data file locked at startup (as antivirus can do at login): the app must wait, not start blank, overwrite it,
+// or fall back to an older readable copy
 const lockedDir = fresh();
 ok.push(launch('seed', lockedDir));
-ok.push(launch('locked', lockedDir, { FLOATIE_TEST_FAIL_READS: '35' }));
+fs.writeFileSync(path.join(lockedDir, 'data.bak.json'),
+  JSON.stringify({ tasks: [{ id: 'stale', text: 'Stale copy', date: '2026-01-01', done: false, order: 0 }], timers: [], log: [], notes: '' }));
+ok.push(launch('locked', lockedDir, { FLOATIE_TEST_FAIL_READS: '20' }));
+
+// valid JSON with the wrong shape is treated as corrupt: recover from the good copy and keep the damaged file aside
+const shapeDir = fresh();
+fs.writeFileSync(path.join(shapeDir, 'data.json'), '{"tasks":{}}');
+fs.writeFileSync(path.join(shapeDir, 'data.bak.json'),
+  JSON.stringify({ tasks: [{ id: 'good', text: 'From the good copy', date: '2026-01-01', done: false, order: 0 }], timers: [], log: [], notes: '' }));
+ok.push(launch('shape', shapeDir));
 
 console.log(`\n${ok.every(Boolean) ? 'ALL SUITES PASSED' : 'SOME SUITES FAILED'} · screenshots in ${shots}`);
 process.exit(ok.every(Boolean) ? 0 : 1);

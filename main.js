@@ -67,7 +67,7 @@ let failReads = TEST ? +(process.env.FLOATIE_TEST_FAIL_READS || 0) : 0;   // tes
 function readStatus(f) {
   for (let attempt = 0; attempt < 15; attempt++) {   // ~3s
     try {
-      if (failReads > 0 && /data(\.bak)?\.json$/.test(f)) { failReads--; throw Object.assign(new Error('simulated lock'), { code: 'EBUSY' }); }
+      if (failReads > 0 && /(^|[\\/])data\.json$/.test(f)) { failReads--; throw Object.assign(new Error('simulated lock'), { code: 'EBUSY' }); }
       if (!fs.existsSync(f)) return { state: 'missing' };
       return { state: 'ok', value: JSON.parse(fs.readFileSync(f, 'utf8')) };
     } catch (err) {
@@ -79,51 +79,73 @@ function readStatus(f) {
   return { state: 'locked' };
 }
 
+// A file that parses but has the wrong shape counts as corrupt, so it can never be loaded, backed up or recovered from.
+const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+const VALID = {
+  'data.json': (v) => isObj(v) && Array.isArray(v.tasks) && v.tasks.every((t) => isObj(t) && typeof t.id === 'string' && typeof t.text === 'string' && typeof t.date === 'string')
+    && (v.timers === undefined || Array.isArray(v.timers)) && (v.log === undefined || Array.isArray(v.log)) && (v.notes === undefined || typeof v.notes === 'string'),
+  'clips.json': (v) => isObj(v) && (v.items === undefined || (Array.isArray(v.items) && v.items.every(isObj))) && (v.folders === undefined || Array.isArray(v.folders)),
+};
+function readValid(f, name) {
+  const r = readStatus(f);
+  return r.state === 'ok' && !VALID[name](r.value) ? { state: 'corrupt' } : r;
+}
+
 // keeps <name>.bak.json (last good copy) and one dated copy per day for two weeks; never copies a corrupt file over a good one
+const DATED = (base) => new RegExp(`^${base}-\\d{4}-\\d\\d-\\d\\d\\.json$`);
 function backup(name) {
   const src = ud(name), base = name.replace('.json', '');
-  if (readJSON(src, null) === null) return;
+  if (readValid(src, name).state !== 'ok') return;
   const dir = ud('backups');
   fs.mkdirSync(dir, { recursive: true });
   fs.copyFileSync(src, ud(`${base}.bak.json`));
   const dest = path.join(dir, `${base}-${new Date().toISOString().slice(0, 10)}.json`);
   if (!fs.existsSync(dest)) fs.copyFileSync(src, dest);
-  fs.readdirSync(dir).filter((f) => f.startsWith(base + '-')).sort().slice(0, -14)
-    .forEach((f) => fs.rmSync(path.join(dir, f), { force: true }));
+  const prune = (re, keep) => fs.readdirSync(dir).filter((f) => re.test(f)).sort().slice(0, -keep).forEach((f) => fs.rmSync(path.join(dir, f), { force: true }));
+  prune(DATED(base), 14);
+  prune(new RegExp(`^${base}-before-(shrink|import)-\\d+\\.json$`), 10);   // safety copies have their own budget
 }
 // Returns { value } on success, { value: null, fresh: true } only when there is genuinely no data yet,
 // and { value: null, error } when data exists but can't be read right now — the caller must not start blank then.
+// A locked or unreadable primary is waited for, never replaced by an older copy; copies are only used when it's missing or corrupt.
 function load(name) {
   const base = name.replace('.json', '');
-  const main = readStatus(ud(name));
+  const main = readValid(ud(name), name);
   if (main.state === 'ok') return { value: main.value };
-  const bak = readStatus(ud(`${base}.bak.json`));
-  if (bak.state === 'ok') { diag('load', name, main.state, '-> using .bak'); return { value: bak.value }; }
+  if (main.state !== 'missing' && main.state !== 'corrupt') { diag('load FAILED', name, 'main', main.state, '(waiting, not recovering)'); return { value: null, error: main.state }; }
   const dir = ud('backups');
-  const dated = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.startsWith(base + '-') && !f.includes('rescue')).sort().reverse() : [];
-  for (const f of dated) {
-    const r = readStatus(path.join(dir, f));
-    if (r.state === 'ok' && main.state !== 'locked') { diag('load', name, main.state, '-> using', f); return { value: r.value }; }
+  const dated = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => DATED(base).test(f)).sort().reverse().map((f) => path.join(dir, f)) : [];
+  for (const f of [ud(`${base}.bak.json`), ...dated]) {
+    const r = readValid(f, name);
+    if (r.state !== 'ok') continue;
+    if (main.state === 'corrupt') {   // keep the damaged original before anything can overwrite it
+      fs.mkdirSync(dir, { recursive: true });
+      try { fs.copyFileSync(ud(name), path.join(dir, `${base}-corrupt-${Date.now()}.json`)); } catch {}
+    }
+    diag('load', name, main.state, '-> using', path.basename(f));
+    return { value: r.value };
   }
-  if (main.state === 'missing' && bak.state === 'missing' && !dated.length) return { value: null, fresh: true };
-  diag('load FAILED', name, 'main', main.state, 'bak', bak.state);
+  if (main.state === 'missing' && !fs.existsSync(ud(`${base}.bak.json`)) && !dated.length) return { value: null, fresh: true };
+  diag('load FAILED', name, 'main', main.state, 'and no usable copy');
   return { value: null, error: main.state };
 }
-const loadWithFallback = (name) => load(name).value;
 
 // Last line of defence: an empty, brand-new state must never replace real saved tasks, and any save that drops
-// more than half the tasks keeps a copy of what it replaced.
+// more than half the tasks keeps a copy of what it replaced. Compared against the last state we know was on disk,
+// so a failed re-read can't make the check pass.
 const isBlank = (d) => d && !(d.tasks || []).length && !(d.timers || []).length && !(d.log || []).length && !d.notes;
+let onDisk = null;   // task count of the last data.json we loaded or wrote; null = nothing there yet
 function saveData(data) {
-  const file = ud('data.json'), cur = readJSON(file, null);
-  if (cur && (cur.tasks || []).length && isBlank(data)) { diag('save REFUSED: blank state over', cur.tasks.length, 'tasks'); return false; }
-  if (cur && (cur.tasks || []).length >= 4 && (data.tasks || []).length < cur.tasks.length / 2) {
+  if (!VALID['data.json'](data)) { diag('save REFUSED: invalid state'); return false; }
+  const file = ud('data.json');
+  if (onDisk && isBlank(data)) { diag('save REFUSED: blank state over', onDisk, 'tasks'); return false; }
+  if (onDisk >= 4 && data.tasks.length < onDisk / 2) {
     fs.mkdirSync(ud('backups'), { recursive: true });
-    fs.copyFileSync(file, ud('backups', `data-before-shrink-${Date.now()}.json`));
-    diag('save shrinks tasks', cur.tasks.length, '->', (data.tasks || []).length, '(copy kept)');
+    try { fs.copyFileSync(file, ud('backups', `data-before-shrink-${Date.now()}.json`)); } catch {}
+    diag('save shrinks tasks', onDisk, '->', data.tasks.length, '(copy kept)');
   }
   const ok = writeJSON(file, data);
-  if (!ok) diag('save FAILED data.json');
+  if (ok) onDisk = data.tasks.length; else diag('save FAILED data.json');
   return ok;
 }
 
@@ -289,9 +311,12 @@ const RECENT_MAX = 300;
 let C = { folders: [], items: [], paused: false };
 let lastSig = null, clipTick = 0;
 const hash = (buf) => crypto.createHash('sha1').update(buf).digest('hex');
+// image clips only ever name files we created inside CLIP_DIR; anything else in clips.json is ignored
+const clipFile = (f) => (typeof f === 'string' && /^[A-Za-z0-9-]+(_t)?\.png$/.test(f) ? path.join(CLIP_DIR, f) : null);
+const validClip = (i) => (i.type === 'text' ? typeof i.text === 'string' : i.type === 'image' && clipFile(i.file) && clipFile(i.thumb)) && typeof i.id === 'string';
 const clipsView = () => ({
   ...C,
-  items: C.items.map((i) => (i.type === 'image' ? { ...i, thumbUrl: pathToFileURL(path.join(CLIP_DIR, i.thumb)).href } : i)),
+  items: C.items.map((i) => (i.type === 'image' ? { ...i, thumbUrl: pathToFileURL(clipFile(i.thumb)).href } : i)),
 });
 // clips are only saved once they've actually been loaded, so a locked file at login can't wipe the history
 let clipsLoaded = false;
@@ -299,13 +324,20 @@ function loadClips() {
   const r = load('clips.json');
   if (r.error) { diag('clips not readable yet, retrying'); setTimeout(loadClips, 3000); return; }
   C = { ...C, ...(r.value || {}) };
+  C.items = (C.items || []).filter(validClip);
+  C.folders = (C.folders || []).filter((f) => isObj(f) && typeof f.id === 'string');
   clipsLoaded = true;
   if (win) win.webContents.send('clips', clipsView());
 }
+// image files are deleted only after the index that no longer mentions them is safely on disk
+let doomed = [];
 function saveClips() {
-  if (!clipsLoaded) return;
-  writeJSON(ud('clips.json'), C);
+  if (!clipsLoaded) return false;
+  const ok = writeJSON(ud('clips.json'), C);
+  if (ok) { for (const f of doomed) fs.rmSync(f, { force: true }); doomed = []; } else diag('save FAILED clips.json');
   if (win) win.webContents.send('clips', clipsView());
+  refreshTray();
+  return ok;
 }
 // password managers (KeePassXC, 1Password, Bitwarden...) mark secrets so clipboard tools skip them
 const excludedByOwner = () => platform.isConcealed(clipboard);
@@ -325,7 +357,7 @@ function pruneRecent() {
 function removeClip(id, persist = true) {
   const it = C.items.find((i) => i.id === id);
   if (!it) return;
-  if (it.type === 'image') for (const f of [it.file, it.thumb]) fs.rmSync(path.join(CLIP_DIR, f), { force: true });
+  if (it.type === 'image') doomed.push(...[it.file, it.thumb].map(clipFile).filter(Boolean));
   C.items = C.items.filter((i) => i.id !== id);
   if (persist) saveClips();
 }
@@ -399,20 +431,23 @@ app.whenReady().then(() => {
   tray = new Tray(nativeImage.createFromPath(ICON).resize({ width: 16, height: 16 }));
   tray.setToolTip('Floatie');
   tray.on('click', toggle);
-  const trayMenu = () => Menu.buildFromTemplate([
-    { label: shortcutLabel ? `Show   ${shortcutLabel}` : 'Show', click: show },
-    { label: 'Settings', click: () => { show(); win.webContents.send('open-settings'); } },
-    { label: 'Pause clipboard capture', type: 'checkbox', checked: C.paused, click: (i) => setPaused(i.checked) },
-    { label: 'Update & restart', click: update },
-    { type: 'separator' },
-    { label: 'Quit', click: () => app.quit() },
-  ]);
   tray.on('right-click', () => tray.popUpContextMenu(trayMenu()));
   shortcutLabel = platform.registerShortcut(globalShortcut, toggle);
   if (shortcutLabel) console.log('global shortcut:', shortcutLabel);
   else console.error('no global shortcut available; all candidates are taken');
-  tray.setContextMenu(platform.isMac ? trayMenu() : null);
+  refreshTray();
 });
+
+const trayMenu = () => Menu.buildFromTemplate([
+  { label: shortcutLabel ? `Show   ${shortcutLabel}` : 'Show', click: show },
+  { label: 'Settings', click: () => { show(); win.webContents.send('open-settings'); } },
+  { label: 'Pause clipboard capture', type: 'checkbox', checked: C.paused, click: (i) => setPaused(i.checked) },
+  { label: 'Update & restart', click: update },
+  { type: 'separator' },
+  { label: 'Quit', click: () => app.quit() },
+]);
+// macOS shows a fixed context menu, so rebuild it whenever its state (the pause checkbox) can change
+function refreshTray() { if (tray && platform.isMac) tray.setContextMenu(trayMenu()); }
 
 app.on('second-instance', () => show());
 app.on('activate', () => win && show());   // macOS: clicking the Dock icon brings it back
@@ -422,10 +457,12 @@ app.on('will-quit', () => globalShortcut.unregisterAll());
 // ---------- IPC ----------
 ipcMain.on('load', (e) => {
   const r = load('data.json');
-  diag('renderer load', r.value ? `${(r.value.tasks || []).length} tasks` : r.fresh ? 'fresh (no data yet)' : `ERROR ${r.error}`);
+  diag('renderer load', r.value ? `${r.value.tasks.length} tasks` : r.fresh ? 'fresh (no data yet)' : `ERROR ${r.error}`);
+  if (r.value) onDisk = r.value.tasks.length;
   e.returnValue = r;
 });
-ipcMain.on('save', (_, data) => saveData(data));
+ipcMain.handle('save', (_, data) => saveData(data));             // the page retries and shows a warning until this returns true
+ipcMain.on('save-sync', (e, data) => { e.returnValue = saveData(data); });   // last save while the window closes
 ipcMain.on('hide', () => win.minimize());
 ipcMain.on('quit', () => app.quit());
 ipcMain.on('update', update);
@@ -461,7 +498,12 @@ ipcMain.handle('export', async (_, data) => {
 ipcMain.handle('import', async () => {
   busy = true;
   const { filePaths } = await dialog.showOpenDialog(win, { filters: [{ name: 'JSON', extensions: ['json'] }], properties: ['openFile'] });
-  return filePaths[0] ? readJSON(filePaths[0], null) : null;
+  if (!filePaths[0]) return null;
+  if (fs.existsSync(ud('data.json'))) {   // whatever the page does with it, the pre-import state stays recoverable
+    fs.mkdirSync(ud('backups'), { recursive: true });
+    fs.copyFileSync(ud('data.json'), ud('backups', `data-before-import-${Date.now()}.json`));
+  }
+  return readJSON(filePaths[0], null);
 });
 
 ipcMain.handle('clips:get', () => clipsView());
@@ -471,7 +513,7 @@ ipcMain.on('clips:copy', (_, id) => {
   try {
     if (it.type === 'text') { clipboard.writeText(it.text); lastSig = 't:' + hash(it.text); }
     else {
-      clipboard.writeImage(nativeImage.createFromPath(path.join(CLIP_DIR, it.file)));
+      clipboard.writeImage(nativeImage.createFromPath(clipFile(it.file)));
       lastSig = imageSig(clipboard.readImage());
     }
   } catch (err) { console.error('copy', err.message); return; }

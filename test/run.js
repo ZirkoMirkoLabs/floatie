@@ -25,6 +25,8 @@ module.exports = async function run(h) {
     if (suite === 'seed') await seed();
     else if (suite === 'verify') await verify();
     else if (suite === 'locked') await locked();
+    else if (suite === 'again') await again();
+    else if (suite === 'shape') await shape();
     else if (suite === 'shots') await require('../tools/readme-shots/suite.js')({ h, js, add, wait, shot });
     else await main();
     check('no renderer errors', errors.length === 0, errors.join(' | '));
@@ -64,6 +66,18 @@ module.exports = async function run(h) {
     await shot('10-overdue-on-launch');
   }
 
+  // third launch: the reminder rang last time but was never answered, so it rings again instead of vanishing
+  async function again() {
+    await wait(300);
+    check('unanswered alarm returns after restart', await js("document.querySelector('#alarm').classList.contains('open') && document.querySelector('#alarmTitle').textContent === 'Persist starred'"));
+  }
+
+  // data.json parses but isn't a task list
+  async function shape() {
+    check('wrong-shape file recovered from good copy', (await js('loaded && D.tasks.map(t => t.text).join()')) === 'From the good copy');
+    check('damaged file kept aside', fs.readdirSync(path.join(app.getPath('userData'), 'backups')).some((f) => f.startsWith('data-corrupt-')));
+  }
+
   // launch with data.json unreadable for the first few seconds (simulated lock)
   async function locked() {
     const file = path.join(app.getPath('userData'), 'data.json');
@@ -74,6 +88,7 @@ module.exports = async function run(h) {
     await wait(2600);
     const texts = await js('D.tasks.map(t => t.text)');
     check('real tasks appear once readable', (await js('loaded')) && texts.includes('Persist me') && texts.includes('Persist starred'), texts.join(', '));
+    check('older backup not used while locked', !texts.includes('Stale copy'), texts.join(', '));
     const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
     check('saved file still has the real tasks', disk.tasks.some((t) => t.text === 'Persist me'));
     check('diagnostics logged', fs.readFileSync(path.join(app.getPath('userData'), 'floatie.log'), 'utf8').includes('load FAILED'));
@@ -127,6 +142,27 @@ module.exports = async function run(h) {
     await js("setTab('notes'); const n = document.querySelector('#notes'); n.value = 'keep me'; n.dispatchEvent(new Event('input')); n.focus(); n.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true");
     check('Esc keeps notes', (await js('D.notes')) === 'keep me');
     await js("setTab('tasks'); true");
+
+    // review fixes: imports are all-or-nothing, imported fields can't inject markup, undo restores everything
+    check('bad import rejected', (await js("importProblems({ tasks: [{ text: 'bad entry' }] }).length")) > 0);
+    check('duplicate ids rejected', (await js("importProblems({ tasks: [{ id: 'a', text: 'x', date: today() }, { id: 'a', text: 'y', date: today() }] }).length")) > 0);
+    check('markup in repeat rejected', (await js("importProblems({ tasks: [{ id: 'a', text: 'x', date: today(), repeat: '<style>body{display:none}</style>' }] }).length")) > 0);
+    check('valid backup accepted', (await js("importProblems({ tasks: [{ id: 'a', text: 'x', date: today(), repeat: 'daily' }], timers: [], notes: '' }).length")) === 0);
+    await js(`D.tasks.push({ id: 'inj', text: 'Injected', date: today(), done: false, order: 50, repeat: '<i id="pwn">x</i>' }); render(); true`);
+    check('task fields are escaped', !(await js("!!document.querySelector('#pwn')")));
+    await js("D.tasks = D.tasks.filter(t => t.id !== 'inj'); render(); true");
+    await add('Tea 5m');
+    await js("document.querySelector(`li.row[data-id='${D.tasks.find(t => t.text === 'Tea').id}'] [data-act=toggle]`).click(); doUndo(); true");
+    check('undo of done restores the timer', await js("(() => { const t = D.tasks.find(x => x.text === 'Tea'); return !t.done && !!t.timer && t.timer.end > Date.now(); })()"));
+    check('first weekday occurrence skips weekends', await js("(() => { const d = parseInput('standup weekdays at 9', today()).date; return ![0, 6].includes(toDate(d).getDay()); })()"));
+    check('snooze keeps the repeat time', await js(`(() => { const d = addDays(today(), 1), at = withDate(Date.now(), d);
+      const t = { id: 'sn', text: 'Snoozy', date: d, due: d, done: false, order: 60, repeat: 'daily', remindAt: at + 300000, remindBase: at };
+      D.tasks.push(t); setDone(t, true); const c = D.tasks.find(x => x.id === t.spawned);
+      const ok = new Date(c.remindAt).getMinutes() === new Date(at).getMinutes(); D.tasks = D.tasks.filter(x => x.series !== 'sn' && x.id !== 'sn'); return ok; })()`));
+    check('re-completing a repeat makes no duplicate', await js(`(() => { const t = { id: 'rp', text: 'Daily thing', date: today(), due: today(), done: false, order: 61, repeat: 'daily' };
+      D.tasks.push(t); setDone(t, true); setDone(find('task', t.spawned), true); setDone(t, false); setDone(t, true);
+      const n = D.tasks.filter(x => x.series === 'rp' && !x.done).length; D.tasks = D.tasks.filter(x => x.series !== 'rp' && x.id !== 'rp'); return n === 1; })()`));
+    await js('render(); true');
 
     // weekly repeat keeps its weekday even after rolling over
     const wk = await js(`(() => { const t = D.tasks.find(x => x.text === 'Team review'); t.due = addDays(today(), -2); t.date = addDays(today(), -2); rollover(); setDone(t, true);
@@ -195,8 +231,18 @@ module.exports = async function run(h) {
     check('alarm opens', await js("document.querySelector('#alarm').classList.contains('open')"));
     check('alarm does not focus Mark done', await js("document.activeElement !== document.querySelector('#aDone')"));
     await shot('08-alarm');
+    check('fired alarm is saved until answered', JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'data.json'), 'utf8')).tasks.find((t) => t.text === 'Ping').alarm === 'task');
     await js("document.querySelector('#aDone').click(); true");
     check('alarm Mark done completes task', await js("D.tasks.find(t => t.text === 'Ping').done === true"));
+    check('answered alarm is cleared', await js("!D.tasks.find(t => t.text === 'Ping').alarm"));
+    // undoing that completion while nothing else rings must not leave a stuck card
+    await js('doUndo(); true'); await wait(100);
+    await js("ringing = []; render(); true");
+    check('empty alarm queue closes the card', await js("!document.querySelector('#alarm').classList.contains('open')"));
+    await js("const p = D.tasks.find(t => t.text === 'Ping'); setDone(p, true); delete p.alarm; ringing = []; render(); true");
+    await js("openHistory(); true");
+    check('sheet makes the panel underneath inert', await js("document.querySelector('.panel > .view').inert === true && document.activeElement.matches('#history [data-close]')"));
+    await js('closeSheets(); true');
 
     // settings + data on disk
     await js('openSettings(); true'); await wait(200);

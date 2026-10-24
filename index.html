@@ -30,6 +30,8 @@
     </div>
   </header>
 
+  <div class="save-warn hidden" id="saveWarn" role="alert">Couldn’t save your changes yet. Retrying…</div>
+
   <div class="tabs">
     <button data-tab="tasks" class="on">Tasks</button><button data-tab="clips">Clipboard</button><button data-tab="notes">Notes</button>
   </div>
@@ -103,6 +105,7 @@
         <button class="btn" id="sOpen">Open data folder</button>
         <button class="btn" id="sUpdate">Update &amp; restart</button>
       </div>
+      <p class="import-msg hidden" id="importMsg" role="status"></p>
       <p class="ver" id="ver"></p>
     </div>
   </div>

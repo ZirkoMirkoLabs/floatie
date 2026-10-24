@@ -10,11 +10,11 @@ It stays out of the way: when your mouse leaves, it fades and shrinks to a slim 
 - **Type tasks like you'd say them:** `call mom at 3pm`, `stretch every day`, `standup weekdays at 9`, `pay rent fri!`, `tea 5m`.
 - **Built-in timers:** one click on 5m, 15m, 25m or 1h, or add `25m` to any task.
 - **Reminders that don't get lost:** if one comes due while your PC is asleep or the app is closed, it fires as soon as you're back.
-- **Clipboard history with folders:** search it, pin snippets into folders, keep images. Password-manager copies are skipped.
+- **Clipboard history with folders:** search it, pin snippets into folders, keep images. Copies that password managers mark as secret are skipped.
 - **Notes scratchpad** for whatever doesn't fit a task.
-- **Undo everything:** a history panel lets you restore anything you deleted.
+- **Undo and history:** `Ctrl+Z` steps back through recent changes, and the history panel restores deleted tasks.
 - **Calm by design:** glass background, fades to see-through when idle, no pop-up toasts.
-- **Your data stays on your computer.** No account, no cloud, no tracking. Saves survive power cuts, with daily backups.
+- **Your data stays on your computer.** No account, no cloud, no tracking. Saves are written so a crash or power cut can't corrupt them, with daily backups.
 
 Windows 10/11 and macOS 12+ · free and open source (MIT)
 
@@ -71,7 +71,7 @@ Click the circle to finish a task. Click a timer to pause it. When a timer or re
 
 **4. Other days.** The 📅 button shows the week; `Alt+←` / `Alt+→` move between days and `T` jumps back to today. Unfinished tasks roll over to the next day on their own.
 
-**5. Oops?** `Ctrl+Z` undoes the last change, and the history panel (`Ctrl+H`) can restore anything you deleted today or earlier.
+**5. Oops?** `Ctrl+Z` undoes recent changes (the last 50), and the history panel (`Ctrl+H`) can bring back deleted or cleared tasks. It keeps the last 400 entries.
 
 ![History](docs/screenshots/history.jpg)
 
@@ -99,7 +99,7 @@ Everything is saved locally, in `%APPDATA%\floatie` on Windows and `~/Library/Ap
 - Each save goes to a temp file first and is then swapped into place, so a crash or power cut can't corrupt it.
 - It keeps a last-good copy plus a dated backup for each of the last 14 days.
 - If the data file can't be read at startup (say, antivirus is scanning it), Floatie waits and retries. It never starts empty over real tasks.
-- **Settings → Export backup / Import backup** moves your data to another computer.
+- **Settings → Export backup / Import backup** moves your tasks, timers, notes, history and look settings to another computer. Clipboard history and window position stay on each computer. An import that isn't a valid backup changes nothing, and the tasks an import replaces can be restored from History.
 
 ## Build from source
 
@@ -132,7 +132,7 @@ Built with Electron and plain HTML/CSS/JS: no framework and no runtime dependenc
 
 ## Status
 
-Windows is used daily and fully tested. macOS support is new: the code and builds are in place, but it hasn't had much real-world use yet. Bug reports are welcome in [Issues](https://github.com/ZirkoMirkoLabs/floatie/issues).
+Windows is used daily and covered by an automated test suite (persistence, restarts, locked files, alarms, collapse and fade). macOS support is new: the code and builds are in place, but it hasn't had much real-world use yet. Bug reports are welcome in [Issues](https://github.com/ZirkoMirkoLabs/floatie/issues).
 
 ## License
 
