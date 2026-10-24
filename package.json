@@ -1,0 +1,63 @@
+{
+  "name": "floatie",
+  "productName": "Floatie",
+  "version": "1.1.0",
+  "description": "A small floating desktop widget for today's tasks, timers, reminders, notes and clipboard history.",
+  "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/ZirkoMirkoLabs/floatie",
+  "repository": "github:ZirkoMirkoLabs/floatie",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/run-tests.js",
+    "pack": "electron-builder --dir",
+    "dist:win": "electron-builder --win nsis --x64 --publish never",
+    "dist:mac": "electron-builder --mac dmg zip --arm64 --x64 --publish never"
+  },
+  "build": {
+    "appId": "com.floatie.app",
+    "productName": "Floatie",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "platform.js",
+      "preload.js",
+      "app.js",
+      "index.html",
+      "style.css",
+      "icon.png",
+      "icon.ico",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "artifactName": "Floatie-Setup-${version}.${ext}",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.productivity",
+      "artifactName": "Floatie-${version}-mac-${arch}.${ext}",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "sign": false
+    }
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  }
+}

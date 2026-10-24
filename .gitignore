@@ -1,0 +1,25 @@
+# dependencies and build output
+node_modules/
+dist/
+out/
+
+# logs and scratch
+*.log
+*.tmp
+npm-debug.log*
+
+# never commit personal app data (it lives in the OS app-data folder, but just in case)
+data.json
+data.bak.json
+clips.json
+clips.bak.json
+window.json
+clips/
+backups/
+shots/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
