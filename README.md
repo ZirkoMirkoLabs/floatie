@@ -3,7 +3,7 @@
 **A tiny always-on-top widget for today's tasks, timers, reminders, notes and clipboard history.**
 It stays out of the way: when your mouse leaves, it fades and shrinks to a slim list of what's left today. Hover it and the full panel comes back.
 
-![Floatie: collapsed view, tasks and clipboard](docs/screenshots/hero.png)
+![Floatie: collapsed view, tasks and clipboard](docs/screenshots/hero.jpg)
 
 - **Type tasks like you'd say them:** `call mom at 3pm`, `stretch every day`, `standup weekdays at 9`, `pay rent fri!`, `tea 5m`.
 - **Built-in timers:** one click on 5m, 15m, 25m or 1h, or add `25m` to any task.
@@ -55,25 +55,27 @@ If you'd rather click through an installer, download it from [**Releases**](http
 
 Click the circle to finish a task. Click a timer to pause it. When a timer or reminder is up, Floatie shows a card with **Mark done**, **+5 min** and **Dismiss**.
 
-![Tasks](docs/screenshots/tasks.png) ![Time's up](docs/screenshots/alarm.png)
+![Tasks](docs/screenshots/tasks.jpg)
+
+![Reminders](docs/screenshots/alarm.jpg)
 
 **2. Let it shrink.** Move the mouse away and Floatie fades and collapses to just today's list. Rest the mouse on it, or click it, to bring it back. Drag the edges to resize; it remembers where you put it.
 
-![Collapsed view](docs/screenshots/collapsed.png)
+![Collapsed view](docs/screenshots/peek.jpg)
 
 **3. Clipboard tab.** Everything you copy shows up here, text and images. Click an item to copy it again. Use **+** to make folders for snippets you reuse. **⏸** pauses recording.
 
-![Clipboard](docs/screenshots/clips.png)
+![Clipboard](docs/screenshots/clips.jpg)
 
 **4. Other days.** The 📅 button shows the week; `Alt+←` / `Alt+→` move between days and `T` jumps back to today. Unfinished tasks roll over to the next day on their own.
 
 **5. Oops?** `Ctrl+Z` undoes the last change, and the history panel (`Ctrl+H`) can restore anything you deleted today or earlier.
 
-![History](docs/screenshots/history.png)
+![History](docs/screenshots/history.jpg)
 
 **6. Make it yours.** **⋯ → Settings** has start at login, keep on top, auto-collapse, hover or click to expand, glass style, idle fade and visibility, theme, accent colour, sound, and backup export/import.
 
-![Settings](docs/screenshots/settings.png)
+![Themes and settings](docs/screenshots/themes.jpg)
 
 ### Shortcuts
 
@@ -124,6 +126,7 @@ Built with Electron and plain HTML/CSS/JS: no framework and no runtime dependenc
 | `preload.js` | the small API the page is allowed to call |
 | `app.js`, `index.html`, `style.css` | the UI: tasks, parsing, calendar, alarms, clipboard, notes, history, settings |
 | `test/` | the hidden test harness |
+| `tools/readme-shots/` | regenerates these README images from the real app: `node tools/readme-shots/make.js` |
 
 ## Status
 

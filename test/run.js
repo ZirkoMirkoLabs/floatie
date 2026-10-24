@@ -25,6 +25,7 @@ module.exports = async function run(h) {
     if (suite === 'seed') await seed();
     else if (suite === 'verify') await verify();
     else if (suite === 'locked') await locked();
+    else if (suite === 'shots') await require('../tools/readme-shots/suite.js')({ h, js, add, wait, shot });
     else await main();
     check('no renderer errors', errors.length === 0, errors.join(' | '));
   } catch (err) {
