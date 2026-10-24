@@ -3,6 +3,8 @@
 **A tiny always-on-top widget for today's tasks, timers, reminders, notes and clipboard history.**
 It stays out of the way: when your mouse leaves, it fades and shrinks to a slim list of what's left today. Hover it and the full panel comes back.
 
+![Floatie fades over your work, opens when you hover and tucks itself away when you leave](docs/screenshots/demo.gif)
+
 ![Floatie: collapsed view, tasks and clipboard](docs/screenshots/hero.jpg)
 
 - **Type tasks like you'd say them:** `call mom at 3pm`, `stretch every day`, `standup weekdays at 9`, `pay rent fri!`, `tea 5m`.
