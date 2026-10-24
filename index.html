@@ -26,14 +26,14 @@
       <button class="ico" id="weekBtn" title="Calendar (W)" data-i="cal"></button>
       <button class="ico" id="autoBtn" title="Auto-collapse" data-i="collapse"></button>
       <button class="ico" id="menuBtn" title="Menu" data-i="menu"></button>
-      <button class="ico" id="close" title="Minimize (Esc) — click Floatie in the taskbar to bring it back" data-i="x"></button>
+      <button class="ico" id="close" title="Minimize (Esc)" data-i="x"></button>
     </div>
   </header>
 
   <div class="save-warn hidden" id="saveWarn" role="alert">Couldn’t save your changes yet. Retrying…</div>
 
   <div class="tabs">
-    <button data-tab="tasks" class="on">Tasks</button><button data-tab="clips">Clipboard</button><button data-tab="notes">Notes</button>
+    <button data-tab="tasks" class="on">Tasks</button><button data-tab="clips">Clipboard</button><button data-tab="snips">Snippets</button><button data-tab="notes">Notes</button>
   </div>
 
   <section class="view" id="tasksView">
@@ -43,14 +43,15 @@
       <button class="ico" id="nextWeek" title="Forward a week" data-i="right"></button>
     </div>
     <form id="add" autocomplete="off">
-      <input id="newTask" placeholder="Add a task…">
+      <span class="add-ico" data-i="plus"></span>
+      <input id="newTask" placeholder="Add a task…" aria-label="New task">
       <div class="hint hidden" id="hint"></div>
     </form>
     <div class="quick" id="quick">
-      <span data-i="clock"></span>
+      <span class="ql"><i data-i="clock"></i>Timer</span>
       <button class="chip" data-m="5">5m</button><button class="chip" data-m="15">15m</button>
       <button class="chip" data-m="25">25m</button><button class="chip" data-m="60">1h</button>
-      <input class="mini-input" id="customMin" placeholder="min" inputmode="numeric" title="Custom timer in minutes, Enter to start">
+      <input class="mini-input" id="customMin" placeholder="min" inputmode="numeric" aria-label="Custom timer in minutes" title="Custom timer in minutes, Enter to start">
     </div>
     <div class="scroll" id="scroll"></div>
     <footer><span id="count"></span><span class="foot-actions"><button id="clearDone"></button><button class="ico" id="historyBtn" title="History (Ctrl+H)" data-i="history"></button></span></footer>
@@ -58,12 +59,24 @@
 
   <section class="view hidden" id="clipsView">
     <div class="clip-top">
-      <input id="clipSearch" placeholder="Search clipboard…">
+      <span class="search" data-i="search"></span>
+      <input id="clipSearch" placeholder="Search clipboard…" aria-label="Search clipboard">
+      <button class="ico" id="clipShot" title="Take a screenshot" data-i="camera"></button>
       <button class="ico" id="clipPause" title="Pause capture"></button>
     </div>
     <div class="folders" id="folders"></div>
     <div class="scroll" id="clipList"></div>
     <footer><span id="clipCount"></span><span class="foot-actions"><button id="clipClear"></button></span></footer>
+  </section>
+
+  <section class="view hidden" id="snipsView">
+    <div class="clip-top">
+      <span class="search" data-i="search"></span>
+      <div class="ghost-wrap"><input id="snipSearch" placeholder="Type a keyword…" aria-label="Find a snippet" autocomplete="off" spellcheck="false"><span class="ghost" id="snipGhost" aria-hidden="true"></span></div>
+      <button class="ico" id="snipAdd" title="New snippet" data-i="plus"></button>
+    </div>
+    <ul class="scroll" id="snipList"></ul>
+    <footer><span id="snipCount"></span><span class="foot-actions"><span class="hint-keys" id="snipKeys"></span></span></footer>
   </section>
 
   <section class="view hidden" id="notesView">
@@ -73,7 +86,7 @@
   <div class="pop hidden" id="menu" style="top:40px;right:8px">
     <button id="mHistory">History <span class="k">Ctrl+H</span></button>
     <button id="mHelp">Shortcuts &amp; tips <span class="k">?</span></button>
-    <button id="mSettings">Settings</button>
+    <button id="mSettings">Settings <span class="k">Ctrl+,</span></button>
     <hr>
     <button id="mUpdate">Update &amp; restart</button>
     <button id="mQuit">Quit Floatie</button>
@@ -97,6 +110,9 @@
       <div class="set"><span>Accent</span><div class="swatches" id="sAccent"></div></div>
       <h4>Behaviour</h4>
       <div class="set"><span>Clipboard history<small>Password-manager copies are never saved</small></span><button class="toggle" id="sClip"></button></div>
+      <div class="set stack"><span>Keep in Recent<small id="sKeepNote">Clips in folders are kept forever</small></span><div class="seg" id="sKeep"><button data-v="300">300</button><button data-v="1000">1,000</button><button data-v="5000">5,000</button><button data-v="0">Forever</button></div></div>
+      <div class="confirm hidden" id="sKeepConfirm"><span id="sKeepConfirmText"></span><span class="inline"><button class="btn danger" id="sKeepYes">Delete them</button><button class="btn" id="sKeepNo">Cancel</button></span></div>
+      <div class="set" id="sFillRow"><span>Quick fill shortcut<small id="sFillNote">Opens your snippets from any app</small></span><button class="toggle" id="sFill"></button></div>
       <div class="set"><span>Sound</span><span class="inline"><button class="btn" id="sTest">Test</button><button class="toggle" id="sSound"></button></span></div>
       <h4>Data</h4>
       <div class="btns">
@@ -105,9 +121,24 @@
         <button class="btn" id="sOpen">Open data folder</button>
         <button class="btn" id="sUpdate">Update &amp; restart</button>
       </div>
-      <p class="import-msg hidden" id="importMsg" role="status"></p>
+      <p class="note" id="dataMsg" role="status" aria-live="polite"></p>
+      <p class="note err hidden" id="errMsg"></p>
       <p class="ver" id="ver"></p>
     </div>
+  </div>
+
+  <!-- snippet editor -->
+  <div class="sheet hidden" id="snipSheet">
+    <header><div class="title"><b id="snipSheetTitle">New snippet</b></div><div class="actions"><button class="ico" data-close data-i="x"></button></div></header>
+    <form class="content snip-form" id="snipForm" autocomplete="off">
+      <label for="snipKey">Keyword<small>What you type to find it, like <code>addr</code> or <code>email</code></small></label>
+      <input id="snipKey" maxlength="32" spellcheck="false" placeholder="addr">
+      <label for="snipText">Text<small>Exactly what gets copied, line breaks included</small></label>
+      <textarea id="snipText" rows="7" placeholder="12 Garden Road&#10;Springfield 40210"></textarea>
+      <p class="note err" id="snipMsg" role="status"></p>
+      <div class="btns"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="snipCancel">Cancel</button><button class="btn danger" type="button" id="snipDelete">Delete</button></div>
+      <p class="fine">Kept on this computer with your tasks, in plain text, and included in backups. Don't store passwords or card numbers here.</p>
+    </form>
   </div>
 
   <!-- history -->
@@ -133,18 +164,24 @@
       <dd>Right-click a task for every option. Double-click to rename. Drag to reorder. Unfinished tasks roll over to today.
           Everything you do is listed in History, where deleted tasks can be restored.</dd>
       <dt>Clipboard</dt>
-      <dd>Everything you copy is kept in Recent (last 300). Click a clip to copy it again. Move a clip into a folder to keep it forever.
-          Right-click a folder to rename or delete it.</dd>
+      <dd>Everything you copy is kept in Recent, newest first by day (how many: Settings → Keep in Recent). Click a clip to copy it again.
+          Move a clip into a folder to keep it forever. Right-click a folder to rename or delete it, or an image to save it as a file.
+          The camera button takes a screenshot straight onto the clipboard; <span class="only-mac"><kbd>⌘⇧⌃4</kbd></span><span class="only-win"><kbd>Win+Shift+S</kbd></span> works too.</dd>
+      <dt>Snippets</dt>
+      <dd>Save text you type again and again (your address, email, a sign-off) under a short keyword.
+          Press <kbd data-fill-shortcut>Alt+Shift+V</kbd> in any app, type the keyword (<kbd>Tab</kbd> completes it) and press <kbd>Enter</kbd>:
+          it's copied and you're back where you were, ready to paste.</dd>
       <dt>Keyboard</dt>
-      <dd><kbd data-shortcut>Ctrl+Alt+Space</kbd> show / hide from anywhere (Ctrl = Cmd on Mac)<br>
-          <kbd>Ctrl+K</kbd> or <kbd>/</kbd> new task · <kbd>Ctrl+Z</kbd> undo · <kbd>Ctrl+H</kbd> history<br>
+      <dd><kbd data-shortcut>Ctrl+Alt+Space</kbd> show / hide from anywhere<br>
+          <kbd>Ctrl+K</kbd> or <kbd>/</kbd> new task · <kbd>Ctrl+Z</kbd> undo · <kbd>Ctrl+H</kbd> history · <kbd>Ctrl+,</kbd> settings<br>
           <kbd>Alt+←</kbd> <kbd>Alt+→</kbd> previous / next day · <kbd>T</kbd> today · <kbd>W</kbd> calendar<br>
-          <kbd>Ctrl+1</kbd> <kbd>Ctrl+2</kbd> <kbd>Ctrl+3</kbd> tabs · <kbd>Ctrl+M</kbd> collapse now · <kbd>Esc</kbd> minimize (click it in the taskbar or the Desktop icon to bring it back)</dd>
+          <kbd>Ctrl+1</kbd>…<kbd>Ctrl+4</kbd> tabs · <kbd>Ctrl+M</kbd> collapse now<br>
+          <kbd>Esc</kbd> <span class="only-win">minimizes it; click Floatie in the taskbar or the tray icon to bring it back</span><span class="only-mac">hides it; the menu-bar icon or the shortcut above brings it back</span></dd>
     </dl></div>
   </div>
 
-  <div id="alarm"><div class="card" tabindex="-1">
-    <small id="alarmKind">Time's up</small><h2 id="alarmTitle"></h2>
+  <div id="alarm" role="alertdialog" aria-labelledby="alarmTitle"><div class="card" tabindex="-1">
+    <small><i data-i="bell"></i><span id="alarmKind">Time's up</span></small><h2 id="alarmTitle"></h2>
     <div class="btns"><button class="primary" id="aDone">Mark done</button><button id="aSnooze">+5 min</button><button id="aDismiss">Dismiss</button></div>
     <div class="more" id="alarmMore"></div>
   </div></div>

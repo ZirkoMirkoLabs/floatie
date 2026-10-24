@@ -4,6 +4,7 @@ const send = (ch) => (...a) => ipcRenderer.send(ch, ...a);
 const invoke = (ch) => (...a) => ipcRenderer.invoke(ch, ...a);
 
 contextBridge.exposeInMainWorld('app', {
+  platform: process.platform,
   load: () => ipcRenderer.sendSync('load'),
   save: invoke('save'),
   saveSync: (d) => ipcRenderer.sendSync('save-sync', d),
@@ -24,6 +25,8 @@ contextBridge.exposeInMainWorld('app', {
   importData: invoke('import'),
   alarm: (title, body) => ipcRenderer.send('alarm', { title, body }),
   alarmAck: send('alarm-ack'),
+  screenshot: send('screenshot'),
+  fillDone: send('fill-done'),
   clips: {
     get: invoke('clips:get'),
     copy: send('clips:copy'),
@@ -34,6 +37,11 @@ contextBridge.exposeInMainWorld('app', {
     deleteFolder: send('clips:folder-delete'),
     pause: send('clips:pause'),
     clear: send('clips:clear'),
+    usage: invoke('clips:usage'),
+    wouldRemove: invoke('clips:would-remove'),
+    writeText: send('clips:write-text'),
+    importText: invoke('clips:import'),
+    saveImage: invoke('clips:save-image'),
   },
   on: (ch, fn) => ipcRenderer.on(ch, (_, v) => fn(v)),
 });

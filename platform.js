@@ -20,12 +20,14 @@ function windowOptions(glass) {
   if (isMac) {
     return {
       transparent: true, backgroundColor: '#00000000', hasShadow: true, roundedCorners: true,
-      vibrancy: glass === 'off' ? undefined : macVibrancy(glass), visualEffectState: 'active',
+      vibrancy: glass === 'off' ? undefined : macVibrancy(glass), visualEffectState: 'active', ...firstMouse(),
     };
   }
   return { transparent: false, backgroundColor: '#00000000', backgroundMaterial: glass === 'off' ? 'none' : glass };
 }
 const macVibrancy = (glass) => (glass === 'mica' ? 'sidebar' : 'hud');
+// a click on Floatie while another app is active should act straight away (tick a task), not just focus it
+const firstMouse = () => (isMac ? { acceptFirstMouse: true } : {});
 function setGlass(win, glass) {
   if (isMac) win.setVibrancy(glass === 'off' ? null : macVibrancy(glass));
   else win.setBackgroundMaterial(glass === 'off' ? 'none' : glass);
@@ -45,11 +47,52 @@ function keepOnTop(win) {
   win.setAlwaysOnTop(true, 'floating');
 }
 const appUserModelId = () => (app.isPackaged ? 'com.floatie.app' : 'Floatie');
+// The × button and Esc. Windows: minimize to the taskbar. macOS: Floatie is a menu-bar app with no Dock icon
+// (floating over full-screen apps needs that), so a minimized window would leave it active with nothing to show.
+// Hide the window and hand the keyboard back to the app you were using; the menu-bar icon or shortcut brings it back.
+function hideWindow(win) {
+  if (isMac) { win.hide(); app.hide(); }
+  else win.minimize();
+}
+const isHidden = (win) => !win.isVisible() || win.isMinimized();
+// Give the keyboard back to the previous app but leave Floatie on screen. macOS: deactivate the app; the window stays
+// visible because Electron marks it that way for visibleOnFullScreen. Windows: blur activates the next window down,
+// normally the one you were in.
+function releaseFocus(win) {
+  if (isMac) app.hide();
+  else win.blur();
+}
+
+// ---------- tray ----------
+// macOS menu bar wants a monochrome template image (it recolours it for light/dark menu bars); Windows keeps the colour icon.
+function trayIcon(nativeImage, dir) {
+  if (isMac) {
+    const img = nativeImage.createFromPath(path.join(dir, 'trayTemplate.png'));   // picks up trayTemplate@2x.png on Retina
+    img.setTemplateImage(true);
+    return img;
+  }
+  return nativeImage.createFromPath(path.join(dir, 'icon.png')).resize({ width: 16, height: 16 });
+}
+
+// ---------- app menu ----------
+// macOS: Electron's default menu claims ⌘H (Hide) and ⌘M (Minimize), which Floatie uses for History and Collapse, and adds
+// reload, zoom and developer-tools items a widget doesn't need. Keep what text fields rely on (the Edit roles), Close and Quit.
+// Windows has no app menu bar for a frameless window, so nothing changes there.
+function setAppMenu(Menu) {
+  if (!isMac) return;
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { role: 'appMenu', submenu: [{ role: 'about' }, { type: 'separator' }, { role: 'quit' }] },
+    { role: 'editMenu' },
+    { label: 'Window', submenu: [{ role: 'close' }] },
+  ]));
+}
 
 // ---------- start at login ----------
 // Windows: a Run-key entry pointing at Electron + this folder (source) or at Floatie.exe (installed).
 // macOS: login items only make sense for the built Floatie.app; running from source would launch bare Electron.
 function loginSupported() { return isWin || (isMac && app.isPackaged); }
+// An installed copy, as opposed to a build folder: only that one may switch start-at-login on by itself.
+function installed() { return isMac ? app.isInApplicationsFolder() : true; }
 function loginArgs(appDir) {
   return isWin ? { path: process.execPath, args: app.isPackaged ? [] : [appDir] } : {};
 }
@@ -76,8 +119,22 @@ function notify({ title, body, icon, onClick }) {
 const SHORTCUTS = isMac
   ? [['Command+Shift+Space', '⌘⇧Space'], ['Control+Option+F', '⌃⌥F'], ['Command+Option+F', '⌘⌥F']]
   : [['Control+Alt+Space', 'Ctrl+Alt+Space'], ['Control+Shift+Space', 'Ctrl+Shift+Space'], ['Control+Alt+F', 'Ctrl+Alt+F'], ['Alt+Shift+F', 'Alt+Shift+F']];
-function registerShortcut(globalShortcut, fn) {
-  for (const [accel, label] of SHORTCUTS) if (globalShortcut.register(accel, fn)) return label;
+// Quick fill (snippet picker) from anywhere. V for paste; chosen to avoid common app shortcuts (Ctrl+Alt+V is Paste Special in Office).
+const FILL_SHORTCUTS = isMac
+  ? [['Control+Option+V', '⌃⌥V'], ['Control+Option+;', '⌃⌥;']]
+  : [['Alt+Shift+V', 'Alt+Shift+V'], ['Control+Alt+Shift+V', 'Ctrl+Alt+Shift+V']];
+function registerShortcut(globalShortcut, fn, list = SHORTCUTS) {
+  for (const [accel, label] of list) if (globalShortcut.register(accel, fn)) return label;
+  return null;
+}
+
+// ---------- screenshot ----------
+// The system's own capture UI, which puts the picture on the clipboard (Floatie's clipboard watcher then keeps it).
+// macOS: area/window capture (Space toggles window mode, Esc cancels); macOS may ask to allow screen recording.
+// Windows 10 1809+/11: the Snipping overlay; it returns straight away, so the watcher looks for the image for a while.
+function screenshotCommand() {
+  if (isMac) return { file: '/usr/sbin/screencapture', args: ['-i', '-c'], waits: true };
+  if (isWin) return { file: 'explorer.exe', args: ['ms-screenclip:'], waits: false };
   return null;
 }
 
@@ -134,6 +191,7 @@ function relaunchOutsideContainer(appDir) {
 
 module.exports = {
   virtualizedBy, relaunchOutsideContainer,
-  isMac, isWin, pinUserData, windowOptions, setGlass, afterCreate, keepOnTop, appUserModelId,
-  loginSupported, getStartAtLogin, setStartAtLogin, notify, SHORTCUTS, registerShortcut, isConcealed,
+  isMac, isWin, pinUserData, windowOptions, setGlass, afterCreate, keepOnTop, appUserModelId, hideWindow, isHidden, releaseFocus, trayIcon, setAppMenu,
+  loginSupported, installed, getStartAtLogin, setStartAtLogin, notify, SHORTCUTS, FILL_SHORTCUTS, registerShortcut, isConcealed,
+  screenshotCommand,
 };

@@ -29,7 +29,23 @@ const I = {
   folder: '<svg viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg>',
   pause: '<svg viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></svg>',
   play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg>',
+  plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>',
+  camera: '<svg viewBox="0 0 24 24"><path d="M4 8.5a2 2 0 0 1 2-2h2l1.5-2h5l1.5 2h2a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><circle cx="12" cy="12.5" r="3.5"/></svg>',
+  save: '<svg viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19h14"/></svg>',
 };
+// timer pill glyphs: a progress ring while running; pause / resume shapes say what a click will do
+const RING = '<svg class="ring" viewBox="0 0 16 16"><circle class="track" cx="8" cy="8" r="6"/><circle class="arc" cx="8" cy="8" r="6"/></svg>';
+const PAUSE = '<svg class="st-pause" viewBox="0 0 16 16"><rect x="4" y="3.5" width="2.8" height="9" rx="1"/><rect x="9.2" y="3.5" width="2.8" height="9" rx="1"/></svg>';
+const PLAY = '<svg class="st-play" viewBox="0 0 16 16"><path d="M5 3.4v9.2c0 .5.5.8.9.5l7-4.6a.6.6 0 0 0 0-1l-7-4.6c-.4-.3-.9 0-.9.5z"/></svg>';
+
+// macOS shows ⌘ ⌥ ⇧ where Windows shows Ctrl Alt Shift (the shortcuts themselves accept either)
+const MAC = A.platform === 'darwin';
+const keyLabel = (s) => (MAC ? s.replace(/Ctrl\+/g, '⌘').replace(/Alt\+/g, '⌥').replace(/Shift\+/g, '⇧') : s);
+document.body.classList.toggle('mac', MAC);
+$$('kbd, .k').forEach((el) => (el.textContent = keyLabel(el.textContent)));
+$$('[title]').forEach((el) => (el.title = keyLabel(el.title)));
+$('#close').title = MAC ? 'Hide (Esc)' : 'Minimize (Esc)';
 $$('[data-i]').forEach((el) => (el.innerHTML = I[el.dataset.i]));
 
 // ---------- dates ----------
@@ -62,7 +78,7 @@ let D, S, loaded = false, migrated = false;
 function adopt(data) {
   D = data;
   D.v = 3;
-  D.tasks ||= []; D.timers ||= []; D.notes ||= ''; D.log ||= [];
+  D.tasks ||= []; D.timers ||= []; D.notes ||= ''; D.log ||= []; D.snippets ||= [];
   D.settings = { accent: ACCENTS[0], sound: true, showWeek: false, ...D.settings };
   S = D.settings;
   loaded = true;
@@ -97,7 +113,7 @@ async function save() {
   if (saveAgain) { saveAgain = false; save(); } else if (!ok) saveRetry = setTimeout(save, 3000);
 }
 
-let P = { glass: 'acrylic', autoCollapse: true, expandOn: 'hover', theme: 'system', fade: true, idleOpacity: 0.35 };   // window prefs live in the main process
+let P = { glass: 'acrylic', autoCollapse: true, expandOn: 'hover', theme: 'system', fade: true, idleOpacity: 0.35, clipKeep: 1000, fillShortcut: true };   // window prefs live in the main process
 let sel = today(), lastToday = today(), tab = 'tasks', collapsed = false;
 let openSetter = null, ringing = [], justDone = null, dragId = null;
 
@@ -202,7 +218,9 @@ const find = (kind, id) => (kind === 'timer' ? D.timers : D.tasks).find((x) => x
 const tasksOn = (d) => D.tasks.filter((t) => t.date === d);
 const openOn = (d) => tasksOn(d).filter((x) => !x.done).sort((a, b) => a.order - b.order);
 const isRinging = (kind, id) => ringing.some((r) => r.id === id && (kind === 'any' || r.kind === kind));
-const pill = (tm, key) => (tm ? `<button class="pill ${tm.end ? '' : 'paused'}" data-pill="${key}" title="Click to pause / resume">${fmt(remaining(tm))}</button>` : '');
+const progress = (tm) => (tm.total ? Math.max(0, Math.min(1, remaining(tm) / tm.total)) : 1);
+const pill = (tm, key) => (tm ? `<button class="pill ${tm.end ? '' : 'paused'}" data-pill="${key}" title="${tm.end ? 'Pause timer' : 'Resume timer'}" style="--p:${progress(tm).toFixed(3)}">${RING}${PAUSE}${PLAY}<span class="tt">${fmt(remaining(tm))}</span></button>` : '');
+const EXAMPLES = ['call mom at 3pm', 'deep work 25m', 'pay rent tomorrow', 'stretch daily !'];
 
 function render() {
   const t = today();
@@ -232,12 +250,13 @@ function render() {
   if (sel === t && D.timers.length) {
     h += '<ul>' + D.timers.map((x) => `
       <li class="row timer-row ${isRinging('timer', x.id) ? 'ringing' : ''}" data-kind="timer" data-id="${esc(x.id)}">
-        <span class="body"><span class="text">${I.clock}${esc(x.label)}</span></span>${pill(x.timer, 'timer:' + x.id)}
-        <span class="tools"><button class="ico del" data-act="del" title="Remove">${I.x}</button></span>
+        <span class="body"><span class="text">${I.clock}${esc(x.label)}</span></span>
+        <span class="tools"><button class="ico del" data-act="del" title="Remove">${I.x}</button></span>${pill(x.timer, 'timer:' + x.id)}
       </li>`).join('') + '</ul>';
   }
   if (!list.length) {
-    h += sel === t ? '<div class="empty"><b>Clear day</b>Add something above. Press <kbd>?</kbd> for tips.</div>'
+    h += sel === t ? `<div class="empty"><b>Nothing on today</b>Type it the way you'd say it. Try one:
+        <div class="examples">${EXAMPLES.map((x) => `<button data-ex="${esc(x)}">${esc(x)}</button>`).join('')}</div></div>`
       : sel > t ? `<div class="empty"><b>Nothing planned</b>Anything you add here shows up ${relDay(sel) === 'Tomorrow' ? 'tomorrow' : 'on ' + relDay(sel)}.</div>`
         : '<div class="empty"><b>Nothing here</b>No tasks were done this day.</div>';
   }
@@ -263,12 +282,12 @@ function row(t) {
   <li class="row ${t.done ? 'done' : ''} ${t.star ? 'starred' : ''} ${justDone === t.id ? 'just-done' : ''} ${isRinging('any', t.id) ? 'ringing' : ''}" data-kind="task" data-id="${esc(t.id)}" ${t.done ? '' : 'draggable="true"'}>
     <button class="check" data-act="toggle" title="${t.done ? 'Mark not done' : 'Mark done'}">${I.check}</button>
     <span class="body"><span class="text" title="Double-click to rename · right-click for more">${esc(t.text)}</span>${meta.length ? `<span class="meta">${meta.join('')}</span>` : ''}</span>
-    ${pill(t.timer, 'task:' + t.id)}
     <span class="tools">
       <button class="ico ${t.star ? 'star-on' : ''}" data-act="star" title="${t.star ? 'Unstar' : 'Star'}">${I.star}</button>
       ${t.done ? '' : `<button class="ico" data-act="timer" title="${t.timer ? 'Stop timer' : 'Start timer'}">${t.timer ? I.stop : I.clock}</button>`}
       <button class="ico del" data-act="del" title="Delete">${I.x}</button>
     </span>
+    ${pill(t.timer, 'task:' + t.id)}
   </li>
   ${openSetter === t.id ? `<li class="setter" data-id="${esc(t.id)}">${[5, 10, 15, 25, 45, 60].map((m) => `<button class="chip" data-set="${m}">${m < 60 ? m + 'm' : '1h'}</button>`).join('')}<input class="mini-input" data-setcustom placeholder="min" inputmode="numeric"></li>` : ''}`;
 }
@@ -295,7 +314,9 @@ let lastTip = '';
 function updateLive() {
   $$('[data-pill]').forEach((p) => {
     const [k, id] = p.dataset.pill.split(':'); const it = find(k, id);
-    if (it?.timer) p.textContent = fmt(remaining(it.timer));
+    if (!it?.timer) return;
+    ($('.tt', p) || p).textContent = fmt(remaining(it.timer));
+    p.style.setProperty('--p', progress(it.timer).toFixed(3));
   });
   const next = [
     ...D.timers.filter((x) => x.timer.end).map((x) => [x.label, remaining(x.timer)]),
@@ -481,6 +502,8 @@ $('#weekBtn').onclick = toggleWeek;
 
 const scroll = $('#scroll');
 scroll.addEventListener('click', (e) => {
+  const ex = e.target.closest('[data-ex]');
+  if (ex) { input.value = ex.dataset.ex; showHint(); input.focus(); return; }
   const p = e.target.closest('[data-pill]');
   if (p) { const [k, id] = p.dataset.pill.split(':'); togglePause(find(k, id).timer); save(); render(); return; }
   const set = e.target.closest('[data-set]');
@@ -637,15 +660,19 @@ function renderClips() {
   const items = CL.items
     .filter((i) => (q ? i.type === 'text' && i.text.toLowerCase().includes(q) : (i.folder || null) === folder))
     .sort((a, b) => b.at - a.at);
-  $('#clipList').innerHTML = items.length ? '<ul>' + items.map((i) => `
+  let day = '';
+  const dayHead = (i) => { const d = ymd(new Date(i.at)); if (q || d === day) return ''; day = d; return `<li class="cday">${relDay(d)} · ${fmtDay(d, { month: 'short', day: 'numeric' })}</li>`; };
+  $('#clipList').innerHTML = items.length ? '<ul>' + items.map((i) => `${dayHead(i)}
     <li class="clip" data-id="${esc(i.id)}" title="Click to copy" tabindex="0" role="button" aria-label="Copy ${i.type === 'text' ? esc(short(i.text, 80)) : 'image'}">
       <div class="c">
         ${i.type === 'text' ? `<div class="preview">${esc(i.text.slice(0, 600))}</div>` : `<img src="${esc(i.thumbUrl)}" alt="">`}
-        <div class="meta"><span>${ago(i.at)}</span><span>${i.type === 'text' ? `${i.text.length} chars` : `${i.w}×${i.h}`}</span>${q && i.folder ? `<span>${I.folder}${esc(folderName(i.folder))}</span>` : ''}</div>
+        <div class="meta"><span>${i.at > Date.now() - 86400e3 ? ago(i.at) : fmtTime(i.at)}</span><span>${i.type === 'text' ? `${i.text.length} chars` : `${i.w}×${i.h}`}</span>${q && i.folder ? `<span>${I.folder}${esc(folderName(i.folder))}</span>` : ''}</div>
       </div>
       <span class="tools"><button class="ico" data-cl="move" title="Move to folder">${I.folder}</button><button class="ico del" data-cl="del" title="Delete">${I.x}</button></span>
     </li>`).join('') + '</ul>'
-    : `<div class="empty">${q ? '<b>No matches</b>' : folder ? '<b>Empty folder</b>Move clips here with the folder button on any clip.' : CL.paused ? '<b>Capture is paused</b>Press play above to resume.' : '<b>Nothing copied yet</b>Copy anything and it shows up here.'}</div>`;
+    : `<div class="empty">${q ? '<b>No matches</b>Only text clips are searched.' : folder ? '<b>Empty folder</b>Move clips here with the folder button on any clip.'
+      : CL.paused ? '<b>Capture is paused</b>Press play above to resume.'
+      : `<b>Nothing copied yet</b>Copy anything, or take a screenshot with the camera button${MAC ? ' or <kbd>⌘⇧⌃4</kbd>' : ' or <kbd>Win+Shift+S</kbd>'}, and it shows up here. Passwords copied from a password manager are never kept.`}</div>`;
 
   $('#clipPause').innerHTML = CL.paused ? I.play : I.pause;
   $('#clipPause').title = CL.paused ? 'Resume capture' : 'Pause capture';
@@ -658,6 +685,8 @@ A.on('clips', (v) => { CL = v; renderClips(); });
 
 $('#clipSearch').addEventListener('input', (e) => { clipQuery = e.target.value.trim(); renderClips(); });
 $('#clipPause').onclick = () => A.clips.pause(!CL.paused);
+$('#clipShot').onclick = () => A.screenshot();
+A.on('show-tab', (t) => { closeSheets(); setTab(t); $('#clipList').scrollTop = 0; });
 $('#clipClear').onclick = () => {
   if (Date.now() < clearArmed) { clearArmed = 0; A.clips.clear(); return; }
   clearArmed = Date.now() + 3000; renderClips(); setTimeout(renderClips, 3100);
@@ -706,13 +735,14 @@ function clipMoveMenu(id, x, y, li) {
   closePops();
   li.classList.add('ctx');
   const it = CL.items.find((i) => i.id === id);
-  ctx.innerHTML = `<div class="lbl">Move to</div>
+  ctx.innerHTML = `${it.type === 'image' ? `<button data-save>${I.save}Save image as…</button><hr>` : ''}<div class="lbl">Move to</div>
     ${[{ id: '', name: 'Recent' }, ...CL.folders].map((f) => `<button data-f="${f.id}" ${(it.folder || '') === f.id ? 'disabled style="opacity:.45"' : ''}>${I.folder}${esc(f.name)}</button>`).join('')}
     <div class="row2"><input class="mini-input" id="moveNew" style="width:130px" placeholder="New folder…"></div><hr>
     <button data-del class="del">${I.trash}Delete</button>`;
   placePop(x, y);
   ctx.onclick = (e) => {
     if (e.target.closest('[data-del]')) { A.clips.remove(id); return closePops(); }
+    if (e.target.closest('[data-save]')) { closePops(); return A.clips.saveImage(id); }
     const b = e.target.closest('[data-f]'); if (!b || b.disabled) return;
     A.clips.move(id, b.dataset.f || null); closePops();
   };
@@ -726,15 +756,116 @@ function clipMoveMenu(id, x, y, li) {
 // ---------- tabs, notes ----------
 function setTab(t) {
   tab = t;
+  $('.tabs').style.setProperty('--i', TABS.indexOf(t));
   $$('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
-  $('#tasksView').classList.toggle('hidden', t !== 'tasks');
-  $('#clipsView').classList.toggle('hidden', t !== 'clips');
-  $('#notesView').classList.toggle('hidden', t !== 'notes');
+  for (const x of TABS) $(`#${x}View`).classList.toggle('hidden', t !== x);
   if (t === 'clips') renderClips();
+  if (t === 'snips') renderSnips();
+  else fillMode = false;
 }
+const TABS = ['tasks', 'clips', 'snips', 'notes'];
 $$('.tabs button').forEach((b) => (b.onclick = () => setTab(b.dataset.tab)));
 let notesT;
 $('#notes').addEventListener('input', (e) => { D.notes = e.target.value; clearTimeout(notesT); notesT = setTimeout(save, 400); });
+
+// ---------- snippets ----------
+// Text you type again and again, under a short keyword. Picking one copies it without adding it to clipboard history.
+// fillMode: opened with the quick-fill shortcut from another app, so a pick hands the keyboard straight back.
+const STARTERS = [['name', 'Your full name'], ['email', 'you@example.com'], ['phone', '+1 555 0100'], ['addr', '12 Garden Road\nSpringfield 40210'], ['sig', 'Best regards,\nYour name']];
+let fillMode = false, snipSel = 0, editingSnip = null;
+const snipInput = $('#snipSearch');
+const byUse = (a, b) => (b.used || 0) - (a.used || 0) || (b.last || 0) - (a.last || 0) || a.key.localeCompare(b.key);
+function snipMatches(raw) {
+  const q = raw.trim().toLowerCase();
+  if (!q) return D.snippets.slice().sort(byUse);
+  const rank = (s) => { const k = s.key.toLowerCase(); return k === q ? 0 : k.startsWith(q) ? 1 : k.includes(q) ? 2 : s.text.toLowerCase().includes(q) ? 3 : 9; };
+  return D.snippets.map((s) => [rank(s), s]).filter(([r]) => r < 9).sort((a, b) => a[0] - b[0] || byUse(a[1], b[1])).map(([, s]) => s);
+}
+// the rest of the most-used keyword that starts with what was typed; Tab accepts it
+function snipCompletion(raw) {
+  const q = raw.toLowerCase();
+  if (!q || /\s/.test(q)) return '';
+  const m = D.snippets.filter((s) => s.key.toLowerCase().startsWith(q) && s.key.length > q.length).sort(byUse)[0];
+  return m ? m.key.slice(q.length) : '';
+}
+function renderSnips() {
+  const list = snipMatches(snipInput.value);
+  snipSel = Math.max(0, Math.min(snipSel, list.length - 1));
+  const rest = snipCompletion(snipInput.value);
+  $('#snipGhost').innerHTML = rest ? `<span class="typed">${esc(snipInput.value)}</span>${esc(rest)}` : '';
+  $('#snipList').innerHTML = list.length ? list.map((x, n) => `
+    <li class="snip ${n === snipSel && snipInput.value ? 'sel' : ''}" data-id="${x.id}" title="Click to copy">
+      <code class="kw">${esc(x.key)}</code>
+      <div class="c"><div class="preview">${esc(x.text.slice(0, 400))}</div></div>
+      <span class="tools"><button class="ico" data-sn="edit" title="Edit">${I.edit}</button></span>
+    </li>`).join('')
+    : D.snippets.length ? '<li class="empty"><b>No match</b>Press Enter to save it as a new snippet.</li>'
+      : `<li class="empty"><b>Fill in your details once</b>Save the text you keep typing (your address, email, a sign-off) under a short keyword.
+        ${fillKey ? `Then press <kbd>${esc(fillKey)}</kbd> in any app, type the keyword and press Enter: it's copied and you're back where you were.` : ''}
+        <div class="examples">${STARTERS.map(([k]) => `<button data-starter="${k}">+ ${k}</button>`).join('')}</div></li>`;
+  $('#snipCount').textContent = D.snippets.length ? `${D.snippets.length} snippet${D.snippets.length === 1 ? '' : 's'}` : '';
+  $('#snipKeys').textContent = fillMode ? 'Tab completes · ↵ copies · Esc goes back' : D.snippets.length ? 'Tab completes · ↵ copies' : '';
+}
+function useSnip(x, li) {
+  A.clips.writeText(x.text);
+  x.used = (x.used || 0) + 1; x.last = Date.now(); save();
+  if (li) { li.classList.add('copied'); setTimeout(() => li.classList.remove('copied'), 700); }
+  if (fillMode) { fillMode = false; snipInput.value = ''; setTimeout(() => { A.fillDone(); renderSnips(); }, li ? 250 : 0); }
+}
+function editSnip(x, key = '', text = '') {
+  editingSnip = x || null;
+  $('#snipSheetTitle').textContent = x ? 'Edit snippet' : 'New snippet';
+  $('#snipKey').value = x ? x.key : key; $('#snipText').value = x ? x.text : text;
+  $('#snipDelete').classList.toggle('hidden', !x);
+  $('#snipMsg').textContent = '';
+  $('#snipSheet').classList.remove('hidden');
+  (x || key ? $('#snipText') : $('#snipKey')).focus();
+}
+function saveSnip() {
+  const key = $('#snipKey').value.trim().replace(/\s+/g, '-'), text = $('#snipText').value;
+  if (!key) return ($('#snipMsg').textContent = 'Give it a keyword.');
+  if (!text.trim()) return ($('#snipMsg').textContent = 'Add the text to copy.');
+  if (D.snippets.some((s) => s !== editingSnip && s.key.toLowerCase() === key.toLowerCase())) return ($('#snipMsg').textContent = `“${key}” is already used by another snippet.`);
+  if (editingSnip) Object.assign(editingSnip, { key, text });
+  else D.snippets.push({ id: uid(), key, text, used: 0, created: Date.now() });
+  save(); closeSheets(); snipInput.value = ''; renderSnips(); snipInput.focus();
+}
+snipInput.addEventListener('input', () => { snipSel = 0; renderSnips(); });
+snipInput.addEventListener('keydown', (e) => {
+  const list = snipMatches(snipInput.value);
+  if (e.key === 'Tab' && !e.shiftKey) {
+    const rest = snipCompletion(snipInput.value);
+    if (rest) { e.preventDefault(); snipInput.value += rest; snipSel = 0; renderSnips(); }
+  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault(); snipSel = (snipSel + (e.key === 'ArrowDown' ? 1 : -1) + list.length) % Math.max(1, list.length); renderSnips();
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (list[snipSel]) useSnip(list[snipSel], $(`#snipList .snip[data-id="${list[snipSel].id}"]`));
+    else if (snipInput.value.trim()) editSnip(null, snipInput.value.trim());
+  } else if (e.key === 'Escape' && fillMode) {
+    e.preventDefault(); e.stopPropagation(); fillMode = false; snipInput.value = ''; renderSnips(); A.fillDone();
+  }
+});
+$('#snipList').addEventListener('click', (e) => {
+  const st = e.target.closest('[data-starter]');
+  if (st) { const [k, ph] = STARTERS.find(([x]) => x === st.dataset.starter); editSnip(null, k); $('#snipText').placeholder = ph; return; }
+  const li = e.target.closest('.snip'); if (!li) return;
+  const x = D.snippets.find((s) => s.id === li.dataset.id); if (!x) return;
+  if (e.target.closest('[data-sn="edit"]')) return editSnip(x);
+  useSnip(x, li);
+});
+$('#snipAdd').onclick = () => editSnip(null, snipInput.value.trim());
+$('#snipForm').onsubmit = (e) => { e.preventDefault(); saveSnip(); };
+$('#snipText').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveSnip(); } });
+$('#snipCancel').onclick = () => closeSheets();
+$('#snipDelete').onclick = () => {
+  const x = editingSnip; if (!x) return;
+  D.snippets = D.snippets.filter((s) => s !== x);
+  pushUndo(() => { if (!D.snippets.includes(x)) D.snippets.push(x); });
+  save(); closeSheets(); renderSnips();
+};
+// the quick-fill shortcut, pressed in another app
+A.on('open-fill', () => { closeSheets(); setTab('snips'); fillMode = true; snipInput.value = ''; snipSel = 0; renderSnips(); snipInput.focus(); });
 
 // ---------- history ----------
 function renderHistory() {
@@ -826,11 +957,13 @@ $('#sAccent').innerHTML = ACCENTS.map((c) => `<button data-v="${c}" style="backg
 const segOn = (id, v) => $$(`#${id} button`).forEach((b) => b.classList.toggle('on', b.dataset.v === String(v)));
 function paintPrefs() {
   $('#autoBtn').classList.toggle('on', P.autoCollapse);
-  $('#autoBtn').title = P.autoCollapse ? 'Auto-collapse is on (Ctrl+M collapses now)' : 'Auto-collapse is off';
+  $('#autoBtn').title = P.autoCollapse ? keyLabel('Auto-collapse is on (Ctrl+M collapses now)') : 'Auto-collapse is off';
   $('#sCollapse').classList.toggle('on', P.autoCollapse);
   $('#sPin').classList.toggle('on', pinned);
   $('#sSound').classList.toggle('on', S.sound);
   $('#sClip').classList.toggle('on', !CL.paused);
+  segOn('sKeep', P.clipKeep);
+  $('#sFill').classList.toggle('on', P.fillShortcut);
   segOn('sExpand', P.expandOn); segOn('sGlass', P.glass); segOn('sTheme', P.theme);
   $('#sFade').classList.toggle('on', P.fade);
   $('#idleRow').classList.toggle('hidden', !P.fade);
@@ -853,7 +986,13 @@ async function openSettings() {
   const st = await A.getState();
   P = st.prefs; pinned = st.pinned;
   $('#sAuto').classList.toggle('on', st.auto);
-  $('#ver').textContent = `Floatie ${st.version} · everything is stored on this PC, with a backup every day`;
+  $('#ver').textContent = `Floatie ${st.version} · everything is stored on this ${MAC ? 'Mac' : 'PC'}, with a backup every day`;
+  dataMsg('');
+  fillKey = st.fillShortcut; paintFillKey();
+  $('#errMsg').classList.toggle('hidden', !st.errors);
+  $('#errMsg').textContent = st.errors ? `Floatie logged ${st.errors} error${st.errors === 1 ? '' : 's'} this week. Details are in errors.log in the data folder.` : '';
+  $('#sKeepConfirm').classList.add('hidden');
+  paintUsage();
   paintPrefs();
   openSheet('settings');
 }
@@ -866,13 +1005,42 @@ $('#sFade').onclick = () => setPref('fade', !P.fade);
 $('#sIdle').addEventListener('input', (e) => setPref('idleOpacity', +e.target.value / 100));
 $('#sClip').onclick = () => { A.clips.pause(!CL.paused); CL.paused = !CL.paused; paintPrefs(); };
 $('#sSound').onclick = () => { S.sound = !S.sound; save(); paintPrefs(); };
+// shrinking what Recent keeps deletes the oldest clips, so it asks first
+let keepPending = null;
+const mb = (b) => (b < 1e6 ? `${Math.max(1, Math.round(b / 1e3))} KB` : `${(b / 1e6).toFixed(b < 1e8 ? 1 : 0)} MB`);
+async function paintUsage() { const u = await A.clips.usage(); $('#sKeepNote').textContent = `${u.recent} in Recent · ${mb(u.bytes)} on disk · folders are kept forever`; }
+segClick('sKeep', async (v) => {
+  const keep = +v, n = await A.clips.wouldRemove(keep);
+  if (!n) { $('#sKeepConfirm').classList.add('hidden'); await setPref('clipKeep', keep); return paintUsage(); }
+  keepPending = keep;
+  $('#sKeepConfirmText').textContent = `Keeping ${keep.toLocaleString('en-US')} deletes the ${n.toLocaleString('en-US')} oldest clip${n === 1 ? '' : 's'} in Recent.`;
+  $('#sKeepConfirm').classList.remove('hidden');
+});
+$('#sKeepYes').onclick = async () => { $('#sKeepConfirm').classList.add('hidden'); await setPref('clipKeep', keepPending); paintUsage(); };
+$('#sKeepNo').onclick = () => $('#sKeepConfirm').classList.add('hidden');
+$('#sFill').onclick = async () => { await setPref('fillShortcut', !P.fillShortcut); fillKey = (await A.getState()).fillShortcut; paintFillKey(); };
+let fillKey = null;
+function paintFillKey() {
+  $('#sFillNote').textContent = P.fillShortcut ? (fillKey ? `${fillKey} opens your snippets from any app` : 'Every candidate shortcut is taken by another app') : 'Off';
+  $$('[data-fill-shortcut]').forEach((el) => (el.textContent = fillKey || 'the quick-fill shortcut'));
+}
 $('#sTest').onclick = chime;
 segClick('sExpand', (v) => setPref('expandOn', v));
 segClick('sGlass', (v) => setPref('glass', v));
 segClick('sTheme', (v) => setPref('theme', v));
 segClick('sAccent', (v) => { S.accent = v; save(); paintPrefs(); });
 $('#sOpen').onclick = () => A.openData();
-$('#sExport').onclick = () => A.exportData({ tasks: D.tasks, timers: D.timers, notes: D.notes, log: D.log, settings: D.settings });
+const dataMsg = (text, kind = '') => { const m = $('#dataMsg'); m.textContent = text; m.className = `note ${kind}`; };
+// backups carry tasks, notes, snippets and the text part of clipboard history (images stay in the data folder)
+const exportPayload = () => ({
+  tasks: D.tasks, timers: D.timers, notes: D.notes, log: D.log, settings: D.settings, snippets: D.snippets,
+  clipboard: { folders: CL.folders, items: CL.items.filter((i) => i.type === 'text').map(({ type, text, at, folder }) => ({ type, text, at, folder })) },
+});
+$('#sExport').onclick = async () => {
+  const r = await A.exportData(exportPayload());
+  if (r === true) dataMsg('Backup saved.', 'ok');
+  else dataMsg(r && r.error ? `Couldn't save the backup: ${r.error}` : '', 'err');
+};
 // Import is all or nothing: every record is checked first, and a file with any bad record changes nothing.
 const validTimer = (tm) => tm && typeof tm.total === 'number' && (typeof tm.end === 'number' || typeof tm.left === 'number');
 const ID = /^[\w-]{1,64}$/, DAY = /^\d{4}-\d\d-\d\d$/;
@@ -880,6 +1048,7 @@ const optNum = (v) => v == null || Number.isFinite(v);
 const validTask = (t) => t && typeof t === 'object' && typeof t.id === 'string' && ID.test(t.id) && typeof t.text === 'string' && t.text.trim()
   && DAY.test(t.date) && [null, undefined, 'daily', 'weekdays', 'weekly'].includes(t.repeat) && (t.due == null || DAY.test(t.due))
   && optNum(t.remindAt) && optNum(t.remindBase) && optNum(t.order) && (t.timer == null || validTimer(t.timer));
+const validSnippet = (x) => x && typeof x === 'object' && typeof x.key === 'string' && x.key.trim() && typeof x.text === 'string';
 function importProblems(d) {
   if (!d || typeof d !== 'object' || !Array.isArray(d.tasks)) return ['no task list'];
   const p = [];
@@ -887,15 +1056,24 @@ function importProblems(d) {
   if (new Set(d.tasks.map((t) => t?.id)).size !== d.tasks.length) p.push('repeated task ids');
   if (d.timers != null && !(Array.isArray(d.timers) && d.timers.every((x) => x && typeof x.id === 'string' && ID.test(x.id) && validTimer(x.timer)))) p.push('timers');
   if (d.notes != null && typeof d.notes !== 'string') p.push('notes');
+  if (d.snippets != null && !(Array.isArray(d.snippets) && d.snippets.every(validSnippet))) p.push('snippets');
   return p;
 }
-const importMsg = (m) => { $('#importMsg').textContent = m; $('#importMsg').classList.toggle('hidden', !m); };
 $('#sImport').onclick = async () => {
-  importMsg('');
+  dataMsg('');
   const d = await A.importData();
-  if (!d) return;
+  if (!d) return;   // cancelled
+  if (d.error && !d.tasks) return dataMsg(`Couldn't read that file: ${d.error}.`, 'err');
   const bad = importProblems(d);
-  if (bad.length) return importMsg(`Not imported: this isn't a valid Floatie backup (${bad.slice(0, 3).join(', ')}${bad.length > 3 ? '…' : ''}). Nothing was changed.`);
+  if (bad.length) return dataMsg(`Not imported: this isn't a valid Floatie backup (${bad.slice(0, 3).join(', ')}${bad.length > 3 ? '…' : ''}). Nothing was changed.`, 'err');
+  const n = applyImport(d);
+  const clips = d.clipboard ? await A.clips.importText(d.clipboard) : 0;
+  dataMsg(`Imported ${n} task${n === 1 ? '' : 's'}${clips ? ` and ${clips} clipboard item${clips === 1 ? '' : 's'}` : ''}. History can restore the tasks it replaced.`, 'ok');
+  paintUsage();
+};
+// replaces tasks, timers and notes with a checked backup (see importProblems); returns the task count, or false if it isn't one
+function applyImport(d) {
+  if (importProblems(d).length) return false;
   const replaced = D.tasks;
   D.tasks = d.tasks.map((t) => ({ ...t, text: t.text.trim(), order: +t.order || 0, repeat: t.repeat || null, timer: t.timer || null }));
   D.timers = (d.timers || []).map((x) => ({ id: x.id, label: String(x.label || 'Timer').slice(0, 200), timer: x.timer }));
@@ -906,11 +1084,17 @@ $('#sImport').onclick = async () => {
       ...(DAY.test(e.to) ? { to: e.to } : {}), ...(Array.isArray(e.tasks) && e.tasks.every(validTask) ? { tasks: e.tasks, restored: !!e.restored } : {}),
     }));
   }
+  if (Array.isArray(d.snippets)) {
+    const seen = new Set();
+    D.snippets = d.snippets.filter((x) => !seen.has(x.key.trim().toLowerCase()) && seen.add(x.key.trim().toLowerCase()))
+      .map((x) => ({ id: typeof x.id === 'string' && ID.test(x.id) ? x.id : uid(), key: x.key.trim().slice(0, 32), text: x.text, used: +x.used || 0, last: +x.last || 0 }));
+  }
   // the tasks it replaced stay in History, restorable without touching anything added later; the old undo steps no longer apply
   log('import', '', { tasks: replaced });
   undo.length = 0;
-  save(); render(); closeSheets();
-};
+  save(); render();
+  return D.tasks.length;
+}
 
 // ---------- keyboard ----------
 document.addEventListener('keydown', (e) => {
@@ -918,9 +1102,10 @@ document.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;   // Ctrl on Windows, Cmd on macOS
   if (mod && k === 'z' && !typing) { e.preventDefault(); return doUndo(); }
   if (mod && k === 'k') { e.preventDefault(); closeSheets(); setTab('tasks'); return input.focus(); }
-  if (mod && ['1', '2', '3'].includes(k)) { e.preventDefault(); return setTab(['tasks', 'clips', 'notes'][+k - 1]); }
+  if (mod && ['1', '2', '3', '4'].includes(k)) { e.preventDefault(); return setTab(TABS[+k - 1]); }
   if (mod && k === 'h') { e.preventDefault(); return openHistory(); }
   if (mod && k === 'm') { e.preventDefault(); return A.collapse(); }
+  if (mod && e.key === ',') { e.preventDefault(); return openSettings(); }
   if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); sel = addDays(sel, e.key === 'ArrowLeft' ? -1 : 1); return render(); }
   if (e.key === 'Escape') {
     if ($('#alarm').classList.contains('open')) return;
@@ -946,6 +1131,8 @@ window.addEventListener('beforeunload', () => { clearTimeout(notesT); if (loaded
 A.getState().then((st) => {
   P = st.prefs; pinned = st.pinned; paintPrefs();
   $$('[data-shortcut]').forEach((el) => (el.textContent = st.shortcut));
+  fillKey = st.fillShortcut; paintFillKey();
+  if (!st.screenshot) $('#clipShot').classList.add('hidden');
   if (!st.autoSupported) $('#sAutoRow').classList.add('hidden');   // macOS from source: login items need the built app
 });
 A.on('resume', () => { rollover(); render(); tick(); });

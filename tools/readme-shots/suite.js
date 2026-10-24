@@ -32,6 +32,16 @@ module.exports = async function shots({ h, js, add, wait, shot }) {
     { h.addClip({ text }); await wait(30); }
   await js("setTab('clips'); true"); await wait(300);
   await shot('clips');
+
+  // snippets: a few everyday ones, the address used most
+  await js(`(() => {
+    for (const [k, t] of [['addr', '12 Garden Road\\nSpringfield'], ['email', 'hello@example.com'], ['sig', 'Thanks so much,\\nSam'], ['zoom', 'https://example.com/meet/sam']]) {
+      editSnip(null, k); document.querySelector('#snipText').value = t; saveSnip();
+    }
+    D.snippets.find((s) => s.key === 'addr').used = 5; D.snippets.find((s) => s.key === 'email').used = 3;
+    closeSheets(); setTab('snips'); renderSnips(); return true; })()`);
+  await wait(300);
+  await shot('snippets');
   await js("setTab('tasks'); true");
 
   // collapsed peek

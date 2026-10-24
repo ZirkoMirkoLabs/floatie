@@ -1,7 +1,7 @@
 // Automated checks against a hidden, off-screen copy of Floatie with its own throwaway data folder.
 // Run:  npm test   (test/run-tests.js starts the suites; never touches the real Floatie, its data, the mouse or the screen)
-// Suites (FLOATIE_TEST_SUITE): main = everything in one session; seed + verify = two launches on the same data folder,
-// checking persistence across a restart and that a reminder which came due while the app was closed fires on launch.
+// Suites (FLOATIE_TEST_SUITE): main = everything in one session; seed, verify, again, locked, shape, migrate, startup =
+// restarts on prepared data folders (see test/run-tests.js for what each one sets up).
 const fs = require('fs');
 const path = require('path');
 
@@ -24,12 +24,16 @@ module.exports = async function run(h) {
     await wait(600);
     if (suite === 'seed') await seed();
     else if (suite === 'verify') await verify();
-    else if (suite === 'locked') await locked();
     else if (suite === 'again') await again();
+    else if (suite === 'locked') await locked();
     else if (suite === 'shape') await shape();
+    else if (suite === 'migrate') await migrate();
+    else if (suite === 'startup') await startup();
     else if (suite === 'shots') await require('../tools/readme-shots/suite.js')({ h, js, add, wait, shot });
     else await main();
     check('no renderer errors', errors.length === 0, errors.join(' | '));
+    const errLog = path.join(app.getPath('userData'), 'errors.log');
+    check('no main-process errors', !fs.existsSync(errLog), fs.existsSync(errLog) ? fs.readFileSync(errLog, 'utf8').slice(0, 400) : '');
   } catch (err) {
     check('harness crashed', false, err.stack);
   }
@@ -66,10 +70,11 @@ module.exports = async function run(h) {
     await shot('10-overdue-on-launch');
   }
 
-  // third launch: the reminder rang last time but was never answered, so it rings again instead of vanishing
+  // third launch: the reminder rang last time but was never answered, so it rings again instead of vanishing — once
   async function again() {
-    await wait(300);
+    await wait(1500);
     check('unanswered alarm returns after restart', await js("document.querySelector('#alarm').classList.contains('open') && document.querySelector('#alarmTitle').textContent === 'Persist starred'"));
+    check('returning alarm rings once, not twice', h.alarms() === 1, `alarms ${h.alarms()}`);
   }
 
   // data.json parses but isn't a task list
@@ -92,6 +97,25 @@ module.exports = async function run(h) {
     const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
     check('saved file still has the real tasks', disk.tasks.some((t) => t.text === 'Persist me'));
     check('diagnostics logged', fs.readFileSync(path.join(app.getPath('userData'), 'floatie.log'), 'utf8').includes('load FAILED'));
+  }
+
+  // corrupt data.json, v2 data.bak.json: loads the backup, upgrades it, keeps unknown fields, and writes v3 back
+  // as soon as something changes (here the rollover moves the old open task to today)
+  async function migrate() {
+    check('falls back to the last good copy', await js("D.tasks.some(t => t.id === 'v2a')"));
+    check('half-written file kept aside', fs.readdirSync(path.join(app.getPath('userData'), 'backups')).some((f) => f.startsWith('data-corrupt-')));
+    check('upgraded to schema 3', (await js('D.v')) === 3 && (await js('Array.isArray(D.log)')));
+    check('unknown fields kept', (await js("D.tasks.find(t => t.id === 'v2a').legacy")) === 'kept' && (await js('D.settings.dim')) === true);
+    check('settings and notes kept', (await js('D.settings.accent')) === '#5b9cf5' && (await js('D.notes')) === 'v2 notes');
+    check('unfinished v2 task rolls to today', (await js("D.tasks.find(t => t.id === 'v2a').date === today()")));
+    const disk = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'data.json'), 'utf8'));
+    check('migrated data written back on launch', disk.v === 3 && disk.tasks.length === 2, `v ${disk.v}, ${disk.tasks.length} tasks`);
+  }
+
+  // slow start with the background timers that a normal launch runs (hover tracking): nothing may throw before or after 'ready'
+  async function startup() {
+    await wait(2500);
+    check('hover tracking runs (window shrinks while the mouse is elsewhere)', h.getMode() === 'collapsed');
   }
 
   async function main() {
@@ -266,5 +290,136 @@ module.exports = async function run(h) {
     await wait(300);
     check('resume rolls tasks to today', (await js("D.tasks.find(t => t.id === 'slept').date")) === (await js('today()')));
     check('resume moves view to today', await js('sel === today()'));
+
+    // a reminder that came due during sleep rings once, although resume and unlock-screen both arrive on wake
+    const rangBefore = h.alarms();
+    await js(`(() => { D.tasks.push({ id: 'nap', text: 'Came due in sleep', date: today(), done: false, order: 98, timer: null, remindAt: Date.now() - 60000, reminded: false }); save(); return true; })()`);
+    h.wake(); h.wake();
+    await wait(600);
+    check('wake catch-up rings once, no duplicates', h.alarms() - rangBefore === 1 && (await js('ringing.length')) === 1, `alarms +${h.alarms() - rangBefore}`);
+    await js("document.querySelector('#aDismiss').click(); true");
+
+    // hover: rest on the window to open it, leave to shrink it. A simulated cursor drives the real logic; the mouse is never moved.
+    await js('A.setPrefs({ autoCollapse: true, expandOn: "hover", fade: true }).then(p => (P = p, true))');
+    h.expand(false); await wait(300);
+    const fb = h.getBounds(), away = { x: fb.x - 400, y: fb.y + 20 };
+    let t = Date.now() + 10000;   // past any "just opened" grace period
+    h.hoverTick(away, t); h.hoverTick(away, t + 500);
+    check('hover: stays open just after the mouse leaves', h.getMode() === 'expanded');
+    h.hoverTick(away, t + 1000);
+    check('hover: shrinks about 1 s after the mouse leaves', h.getMode() === 'collapsed');
+    await wait(300);
+    const pb = h.getBounds(), on = { x: pb.x + 30, y: pb.y + 12 };
+    t += 3000;
+    h.hoverTick(on, t); h.hoverTick(on, t + 150);
+    check('hover: a quick pass over does not open it', h.getMode() === 'collapsed');
+    h.hoverTick(on, t + 300);
+    check('hover: resting ~0.25 s opens it', h.getMode() === 'expanded');
+    check('hover: opening does not take keyboard focus', !win.isFocused());
+    await wait(300);
+    t += 3000; h.setBusy(true);   // typing in Floatie or an open menu
+    h.hoverTick(away, t); h.hoverTick(away, t + 3000);
+    check('hover: stays open while typing or a menu is open', h.getMode() === 'expanded');
+    h.setBusy(false);
+    h.hoverTick(away, t + 4000);
+    await js('A.setPrefs({ expandOn: "click" }).then(p => (P = p, true))');
+    await wait(300);
+    const cb = h.getBounds(), onPeek = { x: cb.x + 30, y: cb.y + 12 };
+    t += 6000; h.hoverTick(onPeek, t); h.hoverTick(onPeek, t + 2000);
+    check('"Expand on: Click" ignores hovering', h.getMode() === 'collapsed');
+    await js('A.setPrefs({ expandOn: "hover" }).then(p => (P = p, true))');
+    h.expand(false); h.solid(); await wait(300);
+
+    // import is all or nothing: one bad record and nothing changes; a good backup replaces the tasks, and History can
+    // bring back the ones it replaced
+    const beforeImport = await js('D.tasks.length');
+    const snap = await js('JSON.stringify({ tasks: D.tasks, timers: D.timers, notes: D.notes })');
+    check('import rejects a file that is not a backup', (await js('applyImport({ hello: 1 })')) === false && (await js('D.tasks.length')) === beforeImport);
+    const goodTask = "{ id: 'i1', text: 'Imported task', date: today(), order: 1, timer: { total: 60000, end: Date.now() + 60000, left: null } }";
+    const mixed = await js(`applyImport({ tasks: [${goodTask}, { id: 'i2', text: 'Bad date', date: 'yesterday' }], notes: 'imported notes' })`);
+    check('a file with one bad record changes nothing', mixed === false && (await js('D.tasks.length')) === beforeImport && (await js('D.notes')) !== 'imported notes');
+    const imported = await js(`applyImport({ tasks: [${goodTask}], timers: [], notes: 'imported notes' })`);
+    check('a valid backup replaces tasks and notes', imported === 1 && (await js('D.tasks.length')) === 1 && (await js('D.notes')) === 'imported notes', `imported ${imported}`);
+    const roundTrip = await js('(() => { const before = JSON.stringify(D.tasks); applyImport(JSON.parse(JSON.stringify(exportPayload()))); return before === JSON.stringify(D.tasks); })()');
+    check('export -> import round trip is lossless', roundTrip);
+    await js(`(() => { openHistory(); const e = D.log.find((x) => x.type === 'import' && x.tasks?.length === ${beforeImport});
+      document.querySelector('#historyList [data-restore="' + e.id + '"]').click(); closeSheets(); return true; })()`);
+    check('History restores the tasks an import replaced', (await js('D.tasks.length')) === beforeImport + 1);
+    await js(`Object.assign(D, JSON.parse(${JSON.stringify(snap)})); save(); render(); true`);
+
+    // clipboard privacy: password-manager markers are honoured (fake clipboard, the real one is never touched)
+    const fakeClip = (formats) => ({ has: (f) => formats.includes(f), readBuffer: () => Buffer.alloc(0) });
+    const marker = h.platform.isMac ? 'org.nspasteboard.ConcealedType' : 'ExcludeClipboardContentFromMonitorProcessing';
+    check('password-manager copies are skipped', h.platform.isConcealed(fakeClip(['text/plain', marker])) && !h.platform.isConcealed(fakeClip(['text/plain'])));
+
+    // macOS text fields need Edit menu roles for Cmd+C / Cmd+V / Cmd+A / Cmd+Z
+    if (h.platform.isMac) {
+      const roles = [];
+      (function walk(m) { for (const i of (m && m.items) || []) { if (i.role) roles.push(String(i.role).toLowerCase()); walk(i.submenu); } })(h.Menu.getApplicationMenu());
+      check('macOS: Edit menu has copy / paste / undo / select all', ['copy', 'paste', 'undo', 'selectall'].every((r) => roles.includes(r)), roles.join(','));
+      // the page owns ⌘H (History), ⌘M (Collapse) and ⌘K (new task): no menu item may take them first
+      const accels = [];
+      (function walk(m) { for (const i of (m && m.items) || []) { accels.push(String(i.accelerator || (i.getDefaultRoleAccelerator && i.getDefaultRoleAccelerator()) || '')); walk(i.submenu); } })(h.Menu.getApplicationMenu());
+      const taken = accels.filter((a) => /^(Command|Cmd|CommandOrControl|CmdOrCtrl)\+[HMK]$/i.test(a));
+      check('macOS: app menu leaves ⌘H, ⌘M and ⌘K to the page', taken.length === 0, taken.join(','));
+      const page = await js(`['h', 'm', 'k'].map((key) => !document.body.dispatchEvent(new KeyboardEvent('keydown', { key, metaKey: true, bubbles: true, cancelable: true })))`);
+      check('the page handles ⌘H, ⌘M and ⌘K itself', page.every(Boolean), JSON.stringify(page));
+      await js('closeSheets(); true'); h.expand(false);
+    }
+    // clipboard retention: Recent keeps the chosen number, folders keep everything, "Forever" keeps all
+    await js('A.setPrefs({ clipKeep: 300 }).then(p => (P = p, true))');
+    for (let i = 0; i < 305; i++) h.addClip({ text: `retention clip ${i}` });
+    const recentOf = () => h.getClips().items.filter((i) => !i.folder).length;
+    check('Recent keeps the newest 300', recentOf() === 300 && h.getClips().items.some((i) => i.text === 'retention clip 304') && !h.getClips().items.some((i) => i.text === 'retention clip 0'), `recent ${recentOf()}`);
+    await js('A.setPrefs({ clipKeep: 7 }).then(p => (P = p, true))');
+    check('only the offered retention choices are accepted', h.prefs().clipKeep === 300, String(h.prefs().clipKeep));
+    await js('A.setPrefs({ clipKeep: 0 }).then(p => (P = p, true))');
+    for (let i = 0; i < 10; i++) h.addClip({ text: `forever clip ${i}` });
+    check('"Forever" keeps every clip', recentOf() === 310, `recent ${recentOf()}`);
+    check('asks before a smaller limit deletes clips', (await js('A.clips.wouldRemove(300)')) === 10);
+    await js('A.setPrefs({ clipKeep: 1000 }).then(p => (P = p, true))');
+
+    // history reads by day
+    const daysAgo = (n) => Date.now() - n * 86400e3;
+    h.getClips().items.find((i) => i.text === 'forever clip 0').at = daysAgo(1);
+    h.getClips().items.find((i) => i.text === 'forever clip 1').at = daysAgo(3);
+    await js("A.clips.get().then(v => { CL = v; setTab('clips'); return true; })");
+    await wait(150);
+    check('clipboard history has one heading per day', (await js("document.querySelectorAll('#clipList .cday').length")) === 3, await js("[...document.querySelectorAll('#clipList .cday')].map(x => x.textContent).join(' | ')"));
+    check('screenshot uses the system capture tool', (() => { const c = h.platform.screenshotCommand(); return h.platform.isMac ? c.file === '/usr/sbin/screencapture' && c.args.includes('-i') && c.args.includes('-c') : h.platform.isWin ? c.args[0] === 'ms-screenclip:' : c === null; })());
+    await shot('11-clips-by-day');
+
+    // backups: snippets and text clips travel; clip import merges without duplicates
+    const added = await js(`A.clips.importText({ folders: [{ id: 'fz', name: 'From backup' }], items: [
+      { type: 'text', text: 'clip from the other computer', at: 1700000000000, folder: 'fz' }, { type: 'image', file: 'x.png' }, { type: 'text', text: '   ' } ] })`);
+    const again = await js(`A.clips.importText({ folders: [], items: [{ type: 'text', text: 'clip from the other computer', at: 1, folder: 'fz' }] })`);
+    check('clip import adds text clips into their folder, once', added === 1 && again === 0 && h.getClips().items.some((i) => i.folder === 'fz' && i.text === 'clip from the other computer'), `added ${added}, again ${again}`);
+
+    // snippets: save once, find by keyword with Tab completion, pick with Enter
+    await js("setTab('snips'); true");
+    await js(`(() => { editSnip(null, 'addr'); document.querySelector('#snipText').value = '12 Garden Road\\nSpringfield'; saveSnip();
+      editSnip(null, 'email'); document.querySelector('#snipText').value = 'me@example.com'; saveSnip();
+      editSnip(null, 'Addr'); document.querySelector('#snipText').value = 'dup'; saveSnip(); return true; })()`);
+    check('duplicate keyword is refused', (await js('D.snippets.length')) === 2 && (await js("document.querySelector('#snipMsg').textContent")).includes('already'));
+    await js('closeSheets(); true');
+    check('Tab completion offers the rest of the keyword', (await js("snipCompletion('ad')")) === 'dr' && (await js("snipCompletion('x')")) === '');
+    await js(`(() => { const i = document.querySelector('#snipSearch'); i.focus(); i.value = 'em'; i.dispatchEvent(new Event('input'));
+      i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })); return true; })()`);
+    check('Tab fills the keyword in', (await js("document.querySelector('#snipSearch').value")) === 'email');
+    win.webContents.send('open-fill'); await wait(150);
+    check('quick fill opens the snippets, ready to type', await js("tab === 'snips' && fillMode && document.activeElement === document.querySelector('#snipSearch')"));
+    await js(`(() => { const i = document.querySelector('#snipSearch'); i.value = 'add'; i.dispatchEvent(new Event('input'));
+      i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
+    await wait(100);
+    check('Enter picks the match and ends quick fill', (await js("D.snippets.find(s => s.key === 'addr').used")) === 1 && !(await js('fillMode')));
+    check('most-used snippet comes first', (await js("snipMatches('')[0].key")) === 'addr');
+    await shot('12-snippets');
+    const payload = await js('exportPayload()');
+    check('backup carries snippets and text clips, not images', payload.snippets.length === 2 && payload.clipboard.items.length > 0 && payload.clipboard.items.every((i) => i.type === 'text'));
+    const disk2 = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'data.json'), 'utf8'));
+    check('snippets saved to disk', Array.isArray(disk2.snippets) && disk2.snippets.length === 2);
+    await js("setTab('tasks'); true");
+
+    check('bundled display font loads', await js(`document.fonts.load('17px "Young Serif"').then((f) => f.length > 0, () => false)`));
   }
 };

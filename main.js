@@ -10,7 +10,8 @@ const platform = require('./platform');
 // Packaged builds don't ship the test suite, so there it only runs a launch smoke test.
 const TEST = process.env.FLOATIE_TEST || null;
 const TEST_SUITE = TEST && !app.isPackaged && fs.existsSync(path.join(__dirname, 'test', 'run.js'));
-platform.pinUserData(TEST);
+// FLOATIE_DATA_DIR runs the normal app (tray, shortcut, hover) on a throwaway folder, for manual checks
+platform.pinUserData(TEST || process.env.FLOATIE_DATA_DIR);
 if (!TEST && !app.requestSingleInstanceLock()) { app.quit(); return; }
 app.setAppUserModelId(platform.appUserModelId());
 
@@ -26,6 +27,30 @@ if (!TEST) {
 }
 
 const ud = (...f) => path.join(app.getPath('userData'), ...f);
+
+// ---------- errors ----------
+// Floatie starts at login and runs for weeks, so an unexpected error must not freeze it behind Electron's modal
+// "A JavaScript error occurred" box. Errors go to errors.log in the data folder (Settings shows a count) and it keeps running.
+function logError(kind, err) {
+  const line = `${new Date().toISOString()} ${kind}: ${(err && err.stack) || err}\n`;
+  try {
+    const f = ud('errors.log');
+    if (fs.existsSync(f) && fs.statSync(f).size > 256e3) fs.renameSync(f, f + '.old');
+    fs.appendFileSync(f, line);
+  } catch {}
+  try { process.stderr.write(line); } catch {}
+}
+process.on('uncaughtException', (err) => logError('uncaught exception', err));
+process.on('unhandledRejection', (err) => logError('unhandled rejection', err));
+for (const s of [process.stdout, process.stderr]) s.on('error', () => {});   // a closed console (EPIPE) is not worth a crash
+// errors logged in the last 7 days, for Settings
+function recentErrors() {
+  try {
+    const since = Date.now() - 7 * 86400e3;
+    return fs.readFileSync(ud('errors.log'), 'utf8').split('\n').filter((l) => /^\d{4}-/.test(l) && Date.parse(l.slice(0, 24)) > since).length;
+  } catch { return 0; }
+}
+
 const ICON = path.join(__dirname, 'icon.png');
 const DEFAULT = { width: 340, height: 520 };
 const FULL_MIN = { width: 260, height: 220 };
@@ -151,7 +176,7 @@ function saveData(data) {
 
 // ---------- window state ----------
 let ws = readJSON(ud('window.json'), {});
-let prefs = { glass: 'acrylic', autoCollapse: true, expandOn: 'hover', theme: 'system', fade: true, idleOpacity: 0.35, ...ws.prefs };
+let prefs = { glass: 'acrylic', autoCollapse: true, expandOn: 'hover', theme: 'system', fade: true, idleOpacity: 0.35, clipKeep: 1000, fillShortcut: true, ...ws.prefs };
 let pinned = ws.pinned !== false;
 let full = ws.full || null;          // user-chosen expanded bounds; only changed by the user's own drags/resizes
 let peekW = ws.peekW || 250;         // user-chosen collapsed width
@@ -187,6 +212,8 @@ function createWindow() {
     frame: false, ...platform.windowOptions(prefs.glass),
     resizable: true, minimizable: true, maximizable: false, fullscreenable: false,
     skipTaskbar: !!TEST, alwaysOnTop: pinned && !TEST, show: false, icon: ICON,
+    // macOS pulls windows back onto the screen unless allowed otherwise; test copies must stay off-screen
+    ...(TEST ? { enableLargerThanScreen: true } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       autoplayPolicy: 'no-user-gesture-required',
@@ -202,7 +229,7 @@ function createWindow() {
   win.on('will-move', () => (resizingUntil = Date.now() + 1500));
   win.on('resized', onUserBounds);
   win.on('moved', onUserBounds);
-  win.on('close', (e) => { if (!app.isQuitting) { e.preventDefault(); win.minimize(); } });
+  win.on('close', (e) => { if (!app.isQuitting) { e.preventDefault(); hide(); } });
   win.on('closed', () => { win = null; clearInterval(fadeTimer); });   // timers check `win`, so none touch a destroyed window while quitting
   win.on('restore', () => { expand(false); keepOnTop(); });
   win.on('blur', keepOnTop);
@@ -278,21 +305,25 @@ function fadeTo(target, ms) {
 }
 const solid = () => fadeTo(1, 140);
 
-// hover tracking: expand when the cursor rests on the window, collapse once it has been away for a moment
+// hover tracking: expand when the cursor rests on the window, collapse once it has been away for a moment.
+// Takes the cursor point and the time so the test harness can drive it without moving the real mouse.
 let insideSince = 0, outsideSince = 0;
-if (!TEST) setInterval(() => {
-  if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) { insideSince = outsideSince = 0; return; }
-  const p = screen.getCursorScreenPoint(), b = win.getBounds(), m = 6, now = Date.now();
+function hoverTick(p, now) {
+  if (!win || win.isDestroyed() || platform.isHidden(win)) { insideSince = outsideSince = 0; return; }
+  const b = win.getBounds(), m = 6;
   const inside = p.x >= b.x - m && p.x < b.x + b.width + m && p.y >= b.y - m && p.y < b.y + b.height + m;
   if (inside) { outsideSince = 0; insideSince ||= now; } else { insideSince = 0; outsideSince ||= now; needLeave = false; }
   if (inside || busy || alarming || !prefs.fade) solid();
   else if (now - outsideSince > 250 && now > graceUntil) fadeTo(prefs.idleOpacity, 1000);
   if (mode === 'collapsed' && inside && !needLeave && prefs.expandOn === 'hover' && now - insideSince > 260) expand(false);
   if (mode === 'expanded' && !inside && prefs.autoCollapse && !busy && !alarming && now > resizingUntil && now > graceUntil && now - outsideSince > 900) collapse();
-}, 100);
+}
+// started from app.whenReady(): a cold start at login (or under Rosetta) can take longer than one tick, and `screen` throws before 'ready'
+const startHoverTracking = () => setInterval(() => hoverTick(screen.getCursorScreenPoint(), Date.now()), 100);
 
-function show() { if (win.isMinimized()) win.restore(); win.show(); expand(true); }
-function toggle() { if (win.isVisible() && !win.isMinimized() && win.isFocused()) win.minimize(); else show(); }
+function show() { if (!win) return; if (win.isMinimized()) win.restore(); win.show(); expand(true); }
+function hide() { if (win) platform.hideWindow(win); }
+function toggle() { if (!win) return; if (!platform.isHidden(win) && win.isFocused()) hide(); else show(); }
 
 // ---------- start at login ----------
 const getAuto = () => (TEST ? false : platform.getStartAtLogin(__dirname));
@@ -309,7 +340,9 @@ function update() {
 
 // ---------- clipboard history ----------
 const CLIP_DIR = ud('clips');
-const RECENT_MAX = 300;
+const KEEP_CHOICES = [300, 1000, 5000, 0];   // clips kept in Recent; 0 = keep everything. Clips in folders are always kept.
+const keepLimit = () => (prefs.clipKeep === 0 ? Infinity : prefs.clipKeep || 1000);
+let clipBurstUntil = 0;   // while a screenshot is being taken, look for images on every tick
 let C = { folders: [], items: [], paused: false };
 let lastSig = null, clipTick = 0;
 const hash = (buf) => crypto.createHash('sha1').update(buf).digest('hex');
@@ -351,10 +384,10 @@ function currentSig(withImage) {
   const img = clipboard.readImage();
   return img.isEmpty() ? { sig: null } : { sig: imageSig(img), img };
 }
-function setPaused(on) { C.paused = on; if (!on) lastSig = currentSig(true).sig; saveClips(); }   // resuming never captures what was copied while paused
-function pruneRecent() {
+function setPaused(on) { C.paused = on; if (!on) lastSig = currentSig(true).sig; saveClips(); refreshTray(); }   // resuming never captures what was copied while paused
+function pruneRecent(limit = keepLimit()) {
   const recent = C.items.filter((i) => !i.folder).sort((a, b) => b.at - a.at);
-  for (const it of recent.slice(RECENT_MAX)) removeClip(it.id, false);
+  for (const it of recent.slice(limit)) removeClip(it.id, false);
 }
 function removeClip(id, persist = true) {
   const it = C.items.find((i) => i.id === id);
@@ -381,21 +414,47 @@ function addClip(cur) {
   pruneRecent();
   saveClips();
 }
-function pollClipboard() {
+function pollClipboard(forceImage) {
   if (C.paused || !clipsLoaded) return;
   try {
     clipTick++;
-    const cur = currentSig(clipTick % 3 === 0);   // images cost more to read, so they're checked every ~2s
+    const burst = Date.now() < clipBurstUntil;
+    const cur = currentSig(forceImage || burst || clipTick % 3 === 0);   // images cost more to read, so normally every ~2s
     if (!cur.sig || cur.sig === lastSig) return;
     lastSig = cur.sig;
     if (excludedByOwner()) return;
     addClip(cur);
+    if (cur.img && burst) { clipBurstUntil = 0; showShot(); }
   } catch (err) { console.error('clipboard poll', err.message); }
+}
+
+// ---------- screenshot ----------
+let shotWasVisible = false;
+function screenshot() {
+  const cmd = platform.screenshotCommand();
+  if (!cmd || !win || TEST) return;
+  shotWasVisible = !platform.isHidden(win);
+  if (shotWasVisible) hide();   // keep Floatie out of the picture
+  clipBurstUntil = Date.now() + 90e3;
+  setTimeout(() => execFile(cmd.file, cmd.args, () => {
+    if (!cmd.waits) return;                    // Windows: the watcher finds the image when the snip is done
+    pollClipboard(true);
+    if (Date.now() < clipBurstUntil) { clipBurstUntil = 0; if (shotWasVisible) show(); }   // cancelled: just come back
+  }), 200);
+}
+// a new screenshot landed: bring Floatie back on the Clipboard tab, without taking the keyboard
+function showShot() {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.showInactive();
+  expand(false);
+  win.webContents.send('show-tab', 'clips');
 }
 
 app.whenReady().then(() => {
   if (!TEST) {
-    if (!ws.autoInit && platform.loginSupported()) { setAuto(true); ws.autoInit = true; writeJSON(ud('window.json'), ws); }
+    // turn start-at-login on once, for an installed copy only (macOS: in Applications, not a build folder or a mounted dmg)
+    if (!ws.autoInit && platform.loginSupported() && platform.installed()) { setAuto(true); ws.autoInit = true; writeJSON(ud('window.json'), ws); }
     const runBackups = () => { try { backup('data.json'); backup('clips.json'); } catch (err) { console.error('backup', err.message); } };
     runBackups();
     setInterval(runBackups, 3 * 3600e3);   // the app runs for weeks at a time, so back up through the day too
@@ -409,7 +468,9 @@ app.whenReady().then(() => {
     setInterval(pollClipboard, 700);
   }
 
+  platform.setAppMenu(Menu);
   createWindow();
+  if (!TEST || process.env.FLOATIE_TEST_SUITE === 'startup') startHoverTracking();
 
   // after sleep or a locked screen: catch up on the date and on reminders that came due meanwhile
   const wake = () => win && win.webContents.send('resume');
@@ -418,7 +479,11 @@ app.whenReady().then(() => {
 
   if (TEST) {
     if (TEST_SUITE) {
-      require('./test/run.js')({ win, app, getMode: () => mode, collapse, expand, fadeTo, solid, prefs: () => prefs, addClip, getClips: () => C, nativeImage, getBounds: () => win.getBounds(), peekBounds, full: () => full, wake });
+      require('./test/run.js')({
+        win, app, getMode: () => mode, collapse, expand, fadeTo, solid, prefs: () => prefs, addClip, getClips: () => C, nativeImage,
+        getBounds: () => win.getBounds(), peekBounds, full: () => full, wake, hoverTick, setBusy: (b) => (busy = b), platform,
+        alarms: () => alarmCount, Menu, pruneRecent,
+      });
     } else {
       // packaged smoke test: the page boots, loads its (empty) data and can save, then exit
       win.webContents.once('did-finish-load', () => setTimeout(async () => {
@@ -430,29 +495,59 @@ app.whenReady().then(() => {
     }
     return;
   }
-  tray = new Tray(nativeImage.createFromPath(ICON).resize({ width: 16, height: 16 }));
+  tray = new Tray(platform.trayIcon(nativeImage, __dirname));
   tray.setToolTip('Floatie');
   tray.on('click', toggle);
   tray.on('right-click', () => tray.popUpContextMenu(trayMenu()));
   shortcutLabel = platform.registerShortcut(globalShortcut, toggle);
+  setFillShortcut(prefs.fillShortcut);
   if (shortcutLabel) console.log('global shortcut:', shortcutLabel);
   else console.error('no global shortcut available; all candidates are taken');
   refreshTray();
 });
 
 const trayMenu = () => Menu.buildFromTemplate([
-  { label: shortcutLabel ? `Show   ${shortcutLabel}` : 'Show', click: show },
-  { label: 'Settings', click: () => { show(); win.webContents.send('open-settings'); } },
+  { label: 'Show Floatie', accelerator: shortcutAccel(), registerAccelerator: false, click: show },
+  { label: 'Quick fill…', accelerator: fillAccel(), registerAccelerator: false, click: openFill },
+  { label: 'Take screenshot', click: screenshot },
+  { label: 'Settings…', click: () => { show(); win.webContents.send('open-settings'); } },
+  { type: 'separator' },
   { label: 'Pause clipboard capture', type: 'checkbox', checked: C.paused, click: (i) => setPaused(i.checked) },
   { label: 'Update & restart', click: update },
   { type: 'separator' },
-  { label: 'Quit', click: () => app.quit() },
+  { label: 'Quit Floatie', click: () => app.quit() },
 ]);
-// macOS shows a fixed context menu, so rebuild it whenever its state (the pause checkbox) can change
+// the shortcut in use, written the way menus expect, so macOS draws it with its own ⌘⇧ glyphs
+const shortcutAccel = () => (platform.SHORTCUTS.find(([, label]) => label === shortcutLabel) || [])[0];
+const fillAccel = () => (platform.FILL_SHORTCUTS.find(([, label]) => label === fillLabel) || [])[0];
+
+// ---------- quick fill ----------
+// A global shortcut opens the snippet picker; picking one copies it and hands the keyboard back to the app you were in.
+let fillLabel = null, fillBefore = null;   // how Floatie looked before the picker opened, restored after a pick
+function setFillShortcut(on) {
+  const accel = fillAccel();
+  if (accel) globalShortcut.unregister(accel);
+  fillLabel = on ? platform.registerShortcut(globalShortcut, openFill, platform.FILL_SHORTCUTS) : null;
+  refreshTray();
+}
+function openFill() {
+  if (!win) return;
+  if (!win.isFocused()) fillBefore = { hidden: platform.isHidden(win), collapsed: mode === 'collapsed' };
+  show();
+  win.webContents.send('open-fill');
+}
+function fillDone() {
+  const b = fillBefore; fillBefore = null;
+  if (!b || !win) return;
+  if (b.hidden) return hide();
+  if (b.collapsed) collapse();
+  platform.releaseFocus(win);   // back to the app you were typing in, Floatie stays where it was
+}
+// macOS opens the attached menu on click, so it is rebuilt whenever its checkbox could be stale
 function refreshTray() { if (tray && platform.isMac) tray.setContextMenu(trayMenu()); }
 
 app.on('second-instance', () => show());
-app.on('activate', () => win && show());   // macOS: clicking the Dock icon brings it back
+app.on('activate', () => win && show());   // macOS: opening Floatie.app again (Finder, Spotlight) brings the window back
 app.on('before-quit', () => { app.isQuitting = true; });   // also lets Windows shut down without the close being cancelled
 app.on('will-quit', () => globalShortcut.unregisterAll());
 
@@ -465,7 +560,7 @@ ipcMain.on('load', (e) => {
 });
 ipcMain.handle('save', (_, data) => saveData(data));             // the page retries and shows a warning until this returns true
 ipcMain.on('save-sync', (e, data) => { e.returnValue = saveData(data); });   // last save while the window closes
-ipcMain.on('hide', () => win.minimize());
+ipcMain.on('hide', () => hide());
 ipcMain.on('quit', () => app.quit());
 ipcMain.on('update', update);
 ipcMain.on('busy', (_, b) => (busy = b));
@@ -475,11 +570,15 @@ ipcMain.on('collapse', () => collapse(true));
 ipcMain.on('tooltip', (_, t) => tray && tray.setToolTip(t));
 ipcMain.on('open-data', () => shell.openPath(app.getPath('userData')));
 ipcMain.handle('get-state', () => ({
-  prefs, pinned, mode, auto: getAuto(), autoSupported: platform.loginSupported(),
-  shortcut: shortcutLabel || 'none (all taken)', platform: process.platform, version: app.getVersion(),
+  prefs, pinned, mode, auto: getAuto(), autoSupported: platform.loginSupported(), errors: recentErrors(),
+  shortcut: shortcutLabel || 'none (all taken)', fillShortcut: fillLabel, platform: process.platform, version: app.getVersion(),
+  screenshot: !!platform.screenshotCommand(),
 }));
 ipcMain.handle('set-prefs', (_, p) => {
+  if ('clipKeep' in p && !KEEP_CHOICES.includes(p.clipKeep)) delete p.clipKeep;
   prefs = { ...prefs, ...p };
+  if ('clipKeep' in p) { pruneRecent(); saveClips(); }
+  if ('fillShortcut' in p && !TEST) setFillShortcut(prefs.fillShortcut);
   if ('glass' in p) platform.setGlass(win, prefs.glass);
   if ('theme' in p) nativeTheme.themeSource = prefs.theme;
   if ('idleOpacity' in p) { fadeTarget = null; fadeTo(prefs.idleOpacity, 200); }   // preview the new level while dragging the slider
@@ -494,18 +593,20 @@ ipcMain.handle('export', async (_, data) => {
   const { filePath } = await dialog.showSaveDialog(win, {
     defaultPath: `floatie-backup-${new Date().toISOString().slice(0, 10)}.json`, filters: [{ name: 'JSON', extensions: ['json'] }],
   });
-  if (filePath) fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-  return !!filePath;
+  if (!filePath) return false;
+  try { fs.writeFileSync(filePath, JSON.stringify(data, null, 2)); return true; } catch (err) { return { error: err.message }; }
 });
 ipcMain.handle('import', async () => {
   busy = true;
-  const { filePaths } = await dialog.showOpenDialog(win, { filters: [{ name: 'JSON', extensions: ['json'] }], properties: ['openFile'] });
-  if (!filePaths[0]) return null;
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, { filters: [{ name: 'JSON', extensions: ['json'] }], properties: ['openFile'] });
+  if (canceled || !filePaths[0]) return null;
+  let parsed;
+  try { parsed = JSON.parse(fs.readFileSync(filePaths[0], 'utf8')); } catch (err) { return { error: err instanceof SyntaxError ? 'it is not valid JSON' : err.message }; }
   if (fs.existsSync(ud('data.json'))) {   // whatever the page does with it, the pre-import state stays recoverable
     fs.mkdirSync(ud('backups'), { recursive: true });
     fs.copyFileSync(ud('data.json'), ud('backups', `data-before-import-${Date.now()}.json`));
   }
-  return readJSON(filePaths[0], null);
+  return parsed;
 });
 
 ipcMain.handle('clips:get', () => clipsView());
@@ -533,9 +634,53 @@ ipcMain.on('clips:folder-delete', (_, id) => {
 });
 ipcMain.on('clips:pause', (_, on) => setPaused(on));
 ipcMain.on('clips:clear', () => { for (const it of C.items.filter((i) => !i.folder)) removeClip(it.id, false); saveClips(); });
+// disk used by clipboard history, for Settings
+ipcMain.handle('clips:usage', () => {
+  let bytes = 0;
+  for (const f of [ud('clips.json'), ...C.items.filter((i) => i.type === 'image').flatMap((i) => [clipFile(i.file), clipFile(i.thumb)])]) {
+    try { bytes += fs.statSync(f).size; } catch {}
+  }
+  return { bytes, items: C.items.length, recent: C.items.filter((i) => !i.folder).length };
+});
+// how many Recent clips a smaller "keep" setting would remove, so the page can ask first
+ipcMain.handle('clips:would-remove', (_, keep) => Math.max(0, C.items.filter((i) => !i.folder).length - (keep === 0 ? Infinity : keep)));
+// copy text without adding it to history (snippets: personal details shouldn't pile up in Recent)
+ipcMain.on('clips:write-text', (_, text) => {
+  if (typeof text !== 'string' || TEST) return;
+  clipboard.writeText(text); lastSig = 't:' + hash(text);
+});
+ipcMain.on('fill-done', fillDone);
+ipcMain.on('screenshot', () => screenshot());
+// text clips and folders from a backup: merged in, nothing replaced, duplicates skipped
+ipcMain.handle('clips:import', (_, data) => {
+  if (!data || !Array.isArray(data.items)) return 0;
+  const folders = new Map(C.folders.map((f) => [f.id, f]));
+  for (const f of Array.isArray(data.folders) ? data.folders : []) {
+    if (f && typeof f.id === 'string' && typeof f.name === 'string' && !folders.has(f.id)) { const nf = { id: f.id, name: f.name.slice(0, 80) }; C.folders.push(nf); folders.set(f.id, nf); }
+  }
+  let added = 0;
+  for (const it of data.items) {
+    if (!it || it.type !== 'text' || typeof it.text !== 'string' || !it.text.trim() || it.text.length > 200000) continue;
+    const folderId = typeof it.folder === 'string' && folders.has(it.folder) ? it.folder : null;
+    if (C.items.some((x) => x.type === 'text' && x.text === it.text && (x.folder || null) === folderId)) continue;
+    C.items.push({ id: crypto.randomUUID().slice(0, 8), type: 'text', text: it.text, at: Number.isFinite(it.at) ? it.at : Date.now(), folder: folderId });
+    added++;
+  }
+  pruneRecent(); saveClips();
+  return added;
+});
+ipcMain.handle('clips:save-image', async (_, id) => {
+  const it = C.items.find((i) => i.id === id && i.type === 'image');
+  if (!it || TEST) return false;
+  busy = true;
+  const { filePath } = await dialog.showSaveDialog(win, { defaultPath: `Floatie clip ${new Date(it.at).toISOString().slice(0, 16).replace('T', ' ').replace(':', '.')}.png`, filters: [{ name: 'PNG image', extensions: ['png'] }] });
+  if (!filePath) return false;
+  try { fs.copyFileSync(clipFile(it.file), filePath); return true; } catch (err) { return { error: err.message }; }
+});
 
+let alarmCount = 0;   // how many alarms the page raised; lets the tests catch duplicates
 ipcMain.on('alarm', (_, { title, body }) => {
-  alarming = true;
+  alarming = true; alarmCount++;
   fadeTarget = null; fadeTo(1, 100);
   if (win.isMinimized()) win.restore();
   win.showInactive();                    // show on top without stealing the keyboard from whatever you're typing in

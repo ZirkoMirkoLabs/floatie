@@ -1,7 +1,7 @@
 {
   "name": "floatie",
   "productName": "Floatie",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "A small floating desktop widget for today's tasks, timers, reminders, notes and clipboard history.",
   "private": true,
   "license": "MIT",
@@ -31,8 +31,12 @@
       "style.css",
       "icon.png",
       "icon.ico",
+      "trayTemplate@2x.png",
+      "trayTemplate.png",
+      "fonts/**",
       "package.json"
     ],
+    "afterPack": "build/adhoc-sign.js",
     "win": {
       "target": "nsis",
       "artifactName": "Floatie-Setup-${version}.${ext}",
@@ -45,12 +49,15 @@
       "createDesktopShortcut": true
     },
     "mac": {
-      "icon": "build/icon.png",
+      "icon": "build/icon-mac.png",
       "category": "public.app-category.productivity",
       "artifactName": "Floatie-${version}-mac-${arch}.${ext}",
       "identity": null,
       "hardenedRuntime": false,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "LSUIElement": true
+      }
     },
     "dmg": {
       "sign": false

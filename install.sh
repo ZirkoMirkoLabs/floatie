@@ -16,13 +16,14 @@ URL=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 echo "Downloading $(basename "$URL")..."
 curl -fL --progress-bar "$URL" -o "$TMP/floatie.zip"
-ditto -x -k "$TMP/floatie.zip" "$TMP/new"
+/usr/bin/ditto -x -k "$TMP/floatie.zip" "$TMP/new"
 APP="$TMP/new/Floatie.app"
 [ -x "$APP/Contents/MacOS/Floatie" ] || { echo "The download doesn't contain Floatie.app. Nothing was changed."; exit 1; }
 
 # Builds are not notarized yet: clear the download flag and ad-hoc sign the new copy before it replaces anything.
-xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
-codesign --force --deep --sign - "$APP" || { echo "Couldn't sign the app. Nothing was changed."; exit 1; }
+# System tools by full path: a pip/pyenv `xattr` earlier on PATH doesn't understand -r.
+/usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+/usr/bin/codesign --force --deep --sign - "$APP" || { echo "Couldn't sign the app. Nothing was changed."; exit 1; }
 
 # swap it in, keeping the old copy until the new one is in place
 pkill -x Floatie 2>/dev/null || true
