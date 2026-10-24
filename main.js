@@ -203,6 +203,7 @@ function createWindow() {
   win.on('resized', onUserBounds);
   win.on('moved', onUserBounds);
   win.on('close', (e) => { if (!app.isQuitting) { e.preventDefault(); win.minimize(); } });
+  win.on('closed', () => { win = null; clearInterval(fadeTimer); });   // timers check `win`, so none touch a destroyed window while quitting
   win.on('restore', () => { expand(false); keepOnTop(); });
   win.on('blur', keepOnTop);
 }
@@ -269,6 +270,7 @@ function fadeTo(target, ms) {
   clearInterval(fadeTimer);
   const from = win.getOpacity(), start = Date.now();
   fadeTimer = setInterval(() => {
+    if (!win || win.isDestroyed()) return clearInterval(fadeTimer);
     const t = Math.min(1, (Date.now() - start) / ms), eased = 1 - Math.pow(1 - t, 3);
     win.setOpacity(from + (target - from) * eased);
     if (t === 1) clearInterval(fadeTimer);
@@ -279,7 +281,7 @@ const solid = () => fadeTo(1, 140);
 // hover tracking: expand when the cursor rests on the window, collapse once it has been away for a moment
 let insideSince = 0, outsideSince = 0;
 if (!TEST) setInterval(() => {
-  if (!win || !win.isVisible() || win.isMinimized()) { insideSince = outsideSince = 0; return; }
+  if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) { insideSince = outsideSince = 0; return; }
   const p = screen.getCursorScreenPoint(), b = win.getBounds(), m = 6, now = Date.now();
   const inside = p.x >= b.x - m && p.x < b.x + b.width + m && p.y >= b.y - m && p.y < b.y + b.height + m;
   if (inside) { outsideSince = 0; insideSince ||= now; } else { insideSince = 0; outsideSince ||= now; needLeave = false; }
